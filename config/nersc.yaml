@@ -1,5 +1,5 @@
 seed: 240513
-output_dir: artifacts/nersc
+output_dir: /pscratch/sd/t/tihsu/database/SBI-reasoning
 
 data:
   template_masses_gev: [200.0, 500.0, 800.0]
