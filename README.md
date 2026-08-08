@@ -46,6 +46,8 @@ Outputs are written under the configured `output_dir`:
 - `jes_likelihood_diagnostics.*`: visible versus visible-plus-truth-invisible JES profiles;
 - `mass_jes_likelihood_grid.*`: two-dimensional likelihood-score surfaces;
 - `mass_jes_profile_scatter.*`: truth versus profiled mass; hue identifies the method, light-to-dark shade identifies truth JES, and marker size identifies truth mass in the reciprocal JES panel;
+- `mass_jes_reconstruction_heatmaps.*`: reconstructed peak bias and Gaussian mass resolution across the full truth mass x JES validation grid, with one row per configured reconstruction method;
+- `mass_jes_reconstruction_metrics.csv`: fitted peak, bias, and resolution source data for every method and grid point;
 - `reconstructed_mass_spectra.*` and `final_benchmark.*`: final reconstruction benchmarks;
 - CSV files beside every diagnostic figure and `summary.json`: source data and aggregate metrics.
 

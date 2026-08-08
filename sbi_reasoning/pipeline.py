@@ -32,6 +32,7 @@ from .plotting import (
     plot_jes_likelihood_diagnostics,
     plot_mass_jes_likelihood_grid,
     plot_mass_jes_profile_scatter,
+    plot_mass_jes_reconstruction_heatmaps,
     plot_dataset_sanity,
     plot_final_benchmark,
     plot_mass_spectra,
@@ -935,6 +936,7 @@ def run_evaluation(
         output_dir, "grid_real", grid_profile_specs
     )
     grid_profile_rows: list[dict[str, float | str]] = []
+    grid_reconstruction_rows: list[dict[str, float | str]] = []
     print("[evaluate] profiling the mass x JES real-data grid", flush=True)
     for (truth_mass, truth_shift), dataset in sorted(grid_profile_datasets.items()):
         nominal_conditions = condition_scaler.transform(dataset["observables"])
@@ -959,6 +961,27 @@ def run_evaluation(
             device,
             initial_noise,
         )
+        reconstruction_targets = {
+            "baseline": baseline_neutrino_momentum(dataset["observables"]),
+            "sft": sft_target,
+            "dgpo": dgpo_target,
+            "oracle": dataset["neutrinos_truth"][..., 1:],
+        }
+        for method, target in reconstruction_targets.items():
+            reconstructed = reconstruct_parent_masses(
+                dataset["leptons_reco"], target, neutrino_mass
+            ).ravel()
+            peak, resolution = fit_mass_peak(reconstructed, bins, mass_range)
+            grid_reconstruction_rows.append(
+                {
+                    "method": method,
+                    "truth_mass_gev": truth_mass,
+                    "truth_jes_shift": truth_shift,
+                    "peak_gev": peak,
+                    "bias_gev": peak - truth_mass,
+                    "resolution_gev": resolution,
+                }
+            )
         visible_features = hypothesis_condition_scaler.transform(dataset["observables"])
         method_scores = {
             "visible": negative_two_delta_mean_log_score(
@@ -1013,6 +1036,14 @@ def run_evaluation(
         writer = csv.DictWriter(stream, fieldnames=list(grid_profile_rows[0]))
         writer.writeheader()
         writer.writerows(grid_profile_rows)
+    with (output_dir / "mass_jes_reconstruction_metrics.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as stream:
+        writer = csv.DictWriter(
+            stream, fieldnames=list(grid_reconstruction_rows[0])
+        )
+        writer.writeheader()
+        writer.writerows(grid_reconstruction_rows)
 
     summary = {}
     for method in ["baseline", "sft", "dgpo", "oracle"]:
@@ -1076,6 +1107,13 @@ def run_evaluation(
     figure_paths.extend(
         plot_mass_jes_profile_scatter(
             grid_profile_rows,
+            config,
+            output_dir,
+        )
+    )
+    figure_paths.extend(
+        plot_mass_jes_reconstruction_heatmaps(
+            grid_reconstruction_rows,
             config,
             output_dir,
         )

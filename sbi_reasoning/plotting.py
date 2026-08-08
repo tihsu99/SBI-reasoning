@@ -954,6 +954,168 @@ def plot_mass_jes_profile_scatter(
     )
 
 
+def plot_mass_jes_reconstruction_heatmaps(
+    rows: list[dict[str, float | str]],
+    config: dict[str, Any],
+    output_dir: Path,
+) -> list[Path]:
+    """Plot reconstructed mass bias and resolution over the truth parameter grid."""
+    apply_nature_style()
+    figure_config = config["figures"]
+    methods = list(
+        figure_config.get(
+            "reconstruction_heatmap_methods",
+            ["baseline", "sft", "dgpo", "oracle"],
+        )
+    )
+    unknown_methods = [method for method in methods if method not in METHOD_LABELS]
+    if unknown_methods:
+        raise ValueError(f"Unknown reconstruction heatmap methods: {unknown_methods}")
+
+    masses = np.asarray(
+        sorted({float(row["truth_mass_gev"]) for row in rows}), dtype=np.float64
+    )
+    shifts = np.asarray(
+        sorted({float(row["truth_jes_shift"]) for row in rows}), dtype=np.float64
+    )
+    mass_edges = _bin_edges(masses)
+    shift_percent = 100.0 * shifts
+    shift_edges = _bin_edges(shift_percent)
+
+    matrices: dict[str, dict[str, np.ndarray]] = {}
+    for method in methods:
+        method_rows = [row for row in rows if row["method"] == method]
+        lookup = {
+            (float(row["truth_mass_gev"]), float(row["truth_jes_shift"])): row
+            for row in method_rows
+        }
+        missing = [
+            (mass, shift)
+            for shift in shifts
+            for mass in masses
+            if (float(mass), float(shift)) not in lookup
+        ]
+        if missing:
+            raise ValueError(
+                f"Missing {len(missing)} reconstruction grid points for {method}"
+            )
+        matrices[method] = {
+            metric: np.asarray(
+                [
+                    [
+                        float(lookup[(float(mass), float(shift))][metric])
+                        for mass in masses
+                    ]
+                    for shift in shifts
+                ]
+            )
+            for metric in ["bias_gev", "resolution_gev"]
+        }
+
+    finite_bias = np.concatenate(
+        [matrices[method]["bias_gev"].ravel() for method in methods]
+    )
+    bias_limit = max(float(np.nanmax(np.abs(finite_bias))), 1.0)
+    finite_resolution = np.concatenate(
+        [matrices[method]["resolution_gev"].ravel() for method in methods]
+    )
+    resolution_limit = max(float(np.nanmax(finite_resolution)), 1.0)
+
+    width = float(figure_config.get("width_inches", 7.2))
+    figure = plt.figure(figsize=(width, 0.86 * width))
+    outer_grid = figure.add_gridspec(
+        2,
+        2,
+        height_ratios=[1.0, 0.035],
+        wspace=0.30,
+        hspace=0.20,
+    )
+    heatmap_grid = outer_grid[0, :].subgridspec(
+        len(methods), 2, wspace=0.30, hspace=0.20
+    )
+    axes = np.empty((len(methods), 2), dtype=object)
+    bias_image = None
+    resolution_image = None
+    for row_index, method in enumerate(methods):
+        bias_axis = figure.add_subplot(heatmap_grid[row_index, 0])
+        resolution_axis = figure.add_subplot(heatmap_grid[row_index, 1])
+        axes[row_index] = [bias_axis, resolution_axis]
+        bias_image = bias_axis.pcolormesh(
+            mass_edges,
+            shift_edges,
+            matrices[method]["bias_gev"],
+            cmap="RdBu_r",
+            norm=matplotlib.colors.TwoSlopeNorm(
+                vmin=-bias_limit, vcenter=0.0, vmax=bias_limit
+            ),
+            shading="flat",
+            rasterized=True,
+        )
+        resolution_image = resolution_axis.pcolormesh(
+            mass_edges,
+            shift_edges,
+            matrices[method]["resolution_gev"],
+            cmap="Blues",
+            vmin=0.0,
+            vmax=resolution_limit,
+            shading="flat",
+            rasterized=True,
+        )
+        bias_axis.set_ylabel(f"{METHOD_LABELS[method]}\nTruth JES shift (%)")
+        if row_index == 0:
+            bias_axis.set_title("Reconstructed mass bias")
+            resolution_axis.set_title("Gaussian mass resolution")
+        if row_index == len(methods) - 1:
+            bias_axis.set_xlabel("Truth parent mass (GeV)")
+            resolution_axis.set_xlabel("Truth parent mass (GeV)")
+        else:
+            bias_axis.tick_params(labelbottom=False)
+            resolution_axis.tick_params(labelbottom=False)
+        resolution_axis.tick_params(labelleft=False)
+
+    tick_count = min(7, len(masses))
+    tick_indices = np.unique(
+        np.linspace(0, len(masses) - 1, tick_count, dtype=int)
+    )
+    for axis in axes.ravel():
+        axis.set_xticks(masses[tick_indices])
+        axis.set_yticks(shift_percent)
+
+    bias_colorbar_axis = figure.add_subplot(outer_grid[1, 0])
+    resolution_colorbar_axis = figure.add_subplot(outer_grid[1, 1])
+    if bias_image is not None:
+        bias_colorbar = figure.colorbar(
+            bias_image, cax=bias_colorbar_axis, orientation="horizontal"
+        )
+        bias_colorbar.set_label("Peak bias (GeV)")
+        bias_colorbar.outline.set_linewidth(0.8)
+    if resolution_image is not None:
+        resolution_colorbar = figure.colorbar(
+            resolution_image,
+            cax=resolution_colorbar_axis,
+            orientation="horizontal",
+        )
+        resolution_colorbar.set_label(r"Gaussian $\sigma$ (GeV)")
+        resolution_colorbar.outline.set_linewidth(0.8)
+
+    figure.text(
+        0.99,
+        0.012,
+        (
+            f"Peak bias = fitted peak - truth mass; "
+            f"$n={int(config['data']['real_events_per_mass']):,}$ events per grid point"
+        ),
+        ha="right",
+        fontsize=6.5,
+    )
+    _clean_axes(axes)
+    _panel_labels(axes)
+    figure.subplots_adjust(left=0.13, right=0.98, bottom=0.13, top=0.94)
+    return save_publication_figure(
+        figure, output_dir / "mass_jes_reconstruction_heatmaps", figure_config
+    )
+
+
 def _bin_edges(centres: np.ndarray) -> np.ndarray:
     if len(centres) < 2:
         return np.asarray([centres[0] - 0.5, centres[0] + 0.5])
