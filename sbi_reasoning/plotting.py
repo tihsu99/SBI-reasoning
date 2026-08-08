@@ -148,25 +148,35 @@ def plot_dataset_sanity(
     neutrino_mass = float(config["physics"]["neutrino_mass_gev"])
     rows: list[dict[str, float]] = []
 
-    energy_values = np.concatenate(
-        [dataset["parent_energy_gev"] for dataset in datasets.values()]
+    sampling_is_momentum = "parent_momentum" in config["physics"]
+    sampling_key = (
+        "parent_momentum_gev" if sampling_is_momentum else "parent_energy_gev"
     )
-    energy_high = float(np.quantile(energy_values, 0.995))
-    energy_low = min(masses)
+    sampling_label = (
+        "Parent momentum magnitude (GeV)"
+        if sampling_is_momentum
+        else "Parent energy (GeV)"
+    )
+    sampling_config_key = "parent_momentum" if sampling_is_momentum else "parent_energy"
+    sampling_values = np.concatenate(
+        [dataset[sampling_key] for dataset in datasets.values()]
+    )
+    sampling_high = float(np.quantile(sampling_values, 0.995))
+    sampling_low = 0.0 if sampling_is_momentum else min(masses)
     for mass in masses:
         dataset = datasets[mass]
         axes[0, 0].hist(
-            dataset["parent_energy_gev"],
+            dataset[sampling_key],
             bins=70,
-            range=(energy_low, energy_high),
+            range=(sampling_low, sampling_high),
             density=True,
             histtype="step",
             color=colors[mass],
             label=f"{mass:g} GeV",
         )
-    center = float(config["physics"]["parent_energy"]["center_gev"])
+    center = float(config["physics"][sampling_config_key]["center_gev"])
     axes[0, 0].axvline(center, color=COLORS["dark"], linestyle="--", linewidth=1.0)
-    axes[0, 0].set(xlabel="Parent energy (GeV)", ylabel="Probability density")
+    axes[0, 0].set(xlabel=sampling_label, ylabel="Probability density")
     mass_handles, mass_labels = axes[0, 0].get_legend_handles_labels()
     figure.legend(
         mass_handles,
@@ -227,6 +237,9 @@ def plot_dataset_sanity(
                 "truth_mass_gev": mass,
                 "event_count": float(len(dataset["observables"])),
                 "parent_energy_median_gev": float(np.median(dataset["parent_energy_gev"])),
+                "parent_momentum_median_gev": float(
+                    np.median(dataset["parent_momentum_gev"])
+                ),
                 "truth_closure_mean_gev": float(np.mean(closure_by_mass[mass])),
                 "truth_closure_rms_gev": float(np.std(closure_by_mass[mass])),
                 "oracle_peak_gev": peak,
@@ -951,6 +964,152 @@ def plot_mass_jes_profile_scatter(
     figure.subplots_adjust(left=0.08, right=0.98, bottom=0.13, top=0.88, wspace=0.34)
     return save_publication_figure(
         figure, output_dir / "mass_jes_profile_scatter", figure_config
+    )
+
+
+def plot_momentum_reconstruction_diagnostics(
+    targets: dict[str, np.ndarray],
+    truth_mass_gev: float,
+    config: dict[str, Any],
+    output_dir: Path,
+) -> list[Path]:
+    """Compare predicted and truth neutrino momentum for the mass-only trial."""
+    apply_nature_style()
+    figure_config = config["figures"]
+    methods = ["baseline", "sft", "dgpo"]
+    components = [r"$p_x$", r"$p_y$", r"$p_z$"]
+    component_colors = [COLORS["blue"], COLORS["orange"], COLORS["red"]]
+    truth = np.asarray(targets["truth"]).reshape(-1, 3)
+    predictions = {
+        method: np.asarray(targets[method]).reshape(-1, 3) for method in methods
+    }
+    point_count = min(
+        len(truth), int(figure_config.get("momentum_scatter_points", 2000))
+    )
+    selected_indices = np.unique(
+        np.linspace(0, len(truth) - 1, point_count, dtype=int)
+    )
+
+    plotted_values = [truth[selected_indices]] + [
+        predictions[method][selected_indices] for method in methods
+    ]
+    lower, upper = np.quantile(np.concatenate(plotted_values), [0.005, 0.995])
+    limit = max(abs(float(lower)), abs(float(upper)), 1.0)
+    limits = (-limit, limit)
+
+    width = float(figure_config.get("width_inches", 7.2))
+    figure, axes = plt.subplots(2, 2, figsize=(width, 0.67 * width))
+    scatter_axes = axes.ravel()[:3]
+    metric_axis = axes.ravel()[3]
+    sample_rows: list[dict[str, float | int | str]] = []
+    metric_rows: list[dict[str, float | str]] = []
+
+    for method, axis in zip(methods, scatter_axes):
+        prediction = predictions[method]
+        for component_index, (component, color) in enumerate(
+            zip(components, component_colors)
+        ):
+            axis.scatter(
+                truth[selected_indices, component_index],
+                prediction[selected_indices, component_index],
+                s=4.0,
+                alpha=0.28,
+                linewidths=0.0,
+                color=color,
+                label=component,
+                rasterized=True,
+            )
+            residual = prediction[:, component_index] - truth[:, component_index]
+            metric_rows.append(
+                {
+                    "method": method,
+                    "component": component.replace("$", ""),
+                    "bias_gev": float(np.mean(residual)),
+                    "resolution_gev": float(np.std(residual)),
+                    "rmse_gev": float(np.sqrt(np.mean(residual**2))),
+                }
+            )
+            for entry_index in selected_indices:
+                sample_rows.append(
+                    {
+                        "method": method,
+                        "entry_index": int(entry_index),
+                        "component": component.replace("$", ""),
+                        "truth_momentum_gev": float(
+                            truth[entry_index, component_index]
+                        ),
+                        "reconstructed_momentum_gev": float(
+                            prediction[entry_index, component_index]
+                        ),
+                    }
+                )
+        axis.plot(
+            limits,
+            limits,
+            color=COLORS["dark"],
+            linestyle="--",
+            linewidth=0.9,
+        )
+        axis.set(
+            xlim=limits,
+            ylim=limits,
+            xlabel="Truth neutrino momentum (GeV)",
+            ylabel="Reconstructed momentum (GeV)",
+            title=METHOD_LABELS[method],
+        )
+    scatter_axes[0].legend(
+        title="Component",
+        loc="upper left",
+        ncol=3,
+        handletextpad=0.2,
+        columnspacing=0.7,
+    )
+
+    positions = np.arange(len(components), dtype=np.float64)
+    offsets = np.linspace(-0.18, 0.18, len(methods))
+    for offset, method in zip(offsets, methods):
+        selected = [row for row in metric_rows if row["method"] == method]
+        metric_axis.errorbar(
+            positions + offset,
+            [float(row["bias_gev"]) for row in selected],
+            yerr=[float(row["resolution_gev"]) for row in selected],
+            marker="o",
+            markersize=3.0,
+            capsize=2.0,
+            linewidth=1.0,
+            color=METHOD_COLORS[method],
+            label=METHOD_LABELS[method],
+        )
+    metric_axis.axhline(
+        0.0, color=COLORS["dark"], linestyle="--", linewidth=0.9
+    )
+    metric_axis.set(
+        xticks=positions,
+        xticklabels=components,
+        xlabel="Neutrino momentum component",
+        ylabel=r"Residual bias $\pm\sigma$ (GeV)",
+        title="Momentum residuals",
+    )
+    metric_axis.legend(loc="upper left")
+    figure.text(
+        0.99,
+        0.015,
+        (
+            f"Truth parent mass = {truth_mass_gev:g} GeV; "
+            f"$n={len(truth) // 2:,}$ events"
+        ),
+        ha="right",
+        fontsize=6.5,
+    )
+    _clean_axes(axes)
+    _panel_labels(axes)
+    figure.subplots_adjust(
+        left=0.09, right=0.99, bottom=0.12, top=0.93, wspace=0.31, hspace=0.39
+    )
+    _write_rows(output_dir / "momentum_reconstruction_samples.csv", sample_rows)
+    _write_rows(output_dir / "momentum_reconstruction_metrics.csv", metric_rows)
+    return save_publication_figure(
+        figure, output_dir / "momentum_reconstruction_diagnostics", figure_config
     )
 
 

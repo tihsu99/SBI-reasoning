@@ -10,15 +10,17 @@ The DGPO adaptation follows [Luo, Hu, and Tang, *Reinforcing Diffusion Models by
 
 ## Physics setup
 
-Each event contains two equal-mass parents. Their energies follow a two-sided exponential (Laplace) distribution centred at 1,000 GeV and analytically conditioned on `energy >= parent mass`. Their three-momenta are back-to-back. Each parent decays isotropically in its rest frame to one lepton and one invisible particle. The measured inputs are the two smeared lepton four-vectors and missing transverse momentum. The learned target is the pair of invisible-particle three-momenta; invisible energy is computed from the configured mass shell before reconstructing both parent invariant masses.
+Each event contains two equal-mass parents with back-to-back three-momenta. In the early-trial `toy.yaml`, the parent momentum magnitude is sampled directly from a non-negative two-sided exponential (Laplace) distribution centred at 1,000 GeV, and the energy is then fixed by `E = sqrt(p^2 + M^2)`. The full NERSC configuration retains the alternative energy-sampling setup. Each parent decays isotropically in its rest frame to one lepton and one invisible particle. The measured inputs are the two smeared lepton four-vectors and missing transverse momentum. The learned target is the pair of invisible-particle three-momenta; invisible energy is computed from the configured mass shell before reconstructing both parent invariant masses.
 
-The default templates are 200, 500, and 800 GeV, with 10,000 events at each point. Nominal pseudo-data cover 200--800 GeV in 25 GeV steps. All masses, event counts, detector effects, architecture sizes, training settings, plots, and hypothesis grids live in YAML.
+The early-trial templates are 400, 500, and 600 GeV, with 10,000 events at each point. Nominal pseudo-data cover 400--600 GeV in 25 GeV steps. All masses, event counts, detector effects, architecture sizes, training settings, plots, and hypothesis grids live in YAML.
 
-The repository runs three hypothesis experiments:
+The repository supports three hypothesis experiments:
 
 1. a one-dimensional parent-mass hypothesis test at nominal detector scale;
 2. a one-dimensional JES-like scale test at fixed parent mass with -10%, 0%, and +10% templates;
 3. a two-dimensional parent-mass x JES template grid.
+
+`config/toy.yaml` deliberately enables only the first, mass-only experiment. It is the early-trial workflow: learn the two neutrino three-momenta, compare the observable-only and visible-plus-invisible mass profiles, apply DGPO on that one-dimensional profile, and validate momentum and reconstructed-mass closure. `config/nersc.yaml` and `config/smoke.yaml` enable all three experiments. The selection is controlled by `experiments.enabled`.
 
 The event contains leptons rather than reconstructed jets, so the JES study is explicitly a detector-response proxy. A coherent visible-object scale shift is applied to both reconstructed visible four-vectors, and the opposite transverse shift is propagated to missing momentum. It is not a replacement for a shower, hadronisation, and jet-calibration simulation.
 
@@ -42,6 +44,8 @@ Outputs are written under the configured `output_dir`:
 - `dataset_truth_mass_sanity.*`: energy sampling, truth mass closure, oracle spectra, and peak closure;
 - `models.pt`: both discriminators, the pretrained flow, the DGPO flow, and scalers;
 - `training_history.*`: discriminator, flow, and DGPO monitoring;
+- `momentum_reconstruction_diagnostics.*`: truth-versus-reconstructed neutrino momentum and component-wise residual bias and resolution at the configured diagnostic mass;
+- `momentum_reconstruction_samples.csv` and `momentum_reconstruction_metrics.csv`: source data for the momentum diagnostic;
 - `sbi_likelihood_diagnostics.*`: visible versus visible-plus-truth-invisible mass profiles;
 - `jes_likelihood_diagnostics.*`: visible versus visible-plus-truth-invisible JES profiles;
 - `mass_jes_likelihood_grid.*`: two-dimensional likelihood-score surfaces;
@@ -69,7 +73,7 @@ Store the W&B key outside the repository in `~/.env` as `WANDB_API_KEY=...`. The
 sbatch --account=<NERSC_ACCOUNT> scripts/train_nersc.slurm
 ```
 
-`config/nersc.yaml` requests CUDA with bfloat16 autocasting, larger GPU batches, online W&B logging, the full 200--800 GeV pseudo-data range, and the three JES evaluation slices. The Slurm script follows the Perlmutter one-GPU shared-QOS layout and deliberately leaves the account outside source control.
+`config/nersc.yaml` requests CUDA with bfloat16 autocasting, larger GPU batches, online W&B logging, the full 200--800 GeV pseudo-data range, and all mass/JES experiments. The Slurm script follows the Perlmutter one-GPU shared-QOS layout and deliberately leaves the account outside source control.
 
 The reported peak and resolution come from a Gaussian-plus-offset fit to the reconstructed mass histogram. If a fit is ill-conditioned, evaluation falls back to the median and central 68% half-width.
 

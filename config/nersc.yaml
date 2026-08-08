@@ -12,6 +12,7 @@ data:
   validation_fraction: 0.2
 
 experiments:
+  enabled: [mass, jes, mass_jes_grid]
   jes_template_shifts: [-0.10, 0.0, 0.10]
   jet_energy_scale:
     parent_mass_gev: 500.0
@@ -76,6 +77,8 @@ figures:
   preview_dpi: 300
   formats: [svg, pdf, tiff, png]
   likelihood_masses_gev: [300.0, 350.0, 500.0, 650.0, 700.0]
+  momentum_diagnostic_mass_gev: 500.0
+  momentum_scatter_points: 5000
   reconstruction_heatmap_methods: [baseline, sft, dgpo, oracle]
 
 logging:

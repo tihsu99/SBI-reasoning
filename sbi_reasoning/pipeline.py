@@ -36,6 +36,7 @@ from .plotting import (
     plot_dataset_sanity,
     plot_final_benchmark,
     plot_mass_spectra,
+    plot_momentum_reconstruction_diagnostics,
     plot_sbi_likelihood_diagnostics,
     plot_training_history,
 )
@@ -73,6 +74,25 @@ def expand_mass_grid(specification: list[float] | dict[str, float]) -> list[floa
     step = float(specification["step"])
     count = int(round((stop - start) / step))
     return [start + index * step for index in range(count + 1)]
+
+
+def enabled_experiments(config: dict[str, Any]) -> set[str]:
+    enabled = set(
+        config["experiments"].get(
+            "enabled", ["mass", "jes", "mass_jes_grid"]
+        )
+    )
+    allowed = {"mass", "jes", "mass_jes_grid"}
+    unknown = enabled - allowed
+    if unknown:
+        raise ValueError(f"Unknown experiments: {sorted(unknown)}")
+    supported = [{"mass"}, allowed]
+    if enabled not in supported:
+        raise ValueError(
+            "experiments.enabled must be [mass] or "
+            "[mass, jes, mass_jes_grid]"
+        )
+    return enabled
 
 
 def mass_tag(mass: float) -> str:
@@ -133,26 +153,50 @@ def run_generation(
     output_dir.mkdir(parents=True, exist_ok=True)
     template_masses = [float(value) for value in config["data"]["template_masses_gev"]]
     real_masses = expand_mass_grid(config["data"]["real_masses_gev"])
-    jes_shifts = [float(value) for value in config["experiments"]["jes_template_shifts"]]
-    grid_specs = [(mass, shift) for mass in template_masses for shift in jes_shifts]
-    jes_real_specs = [
-        (
-            float(config["experiments"]["jet_energy_scale"]["parent_mass_gev"]),
-            float(shift),
-        )
-        for shift in config["experiments"]["jet_energy_scale"]["real_shifts"]
-    ]
-    grid_surface_specs = [
-        (float(point["mass_gev"]), float(point["jes_shift"]))
-        for point in config["experiments"]["mass_jes_grid"]["benchmark_points"]
-    ]
-    grid_profile_specs = [
-        (mass, float(jes_shift))
-        for mass in real_masses
-        for jes_shift in config["experiments"]["mass_jes_grid"][
-            "evaluation_jes_shifts"
+    enabled = enabled_experiments(config)
+    systematics_enabled = bool(enabled & {"jes", "mass_jes_grid"})
+    jes_shifts = (
+        [float(value) for value in config["experiments"]["jes_template_shifts"]]
+        if systematics_enabled
+        else []
+    )
+    grid_specs = (
+        [(mass, shift) for mass in template_masses for shift in jes_shifts]
+        if systematics_enabled
+        else []
+    )
+    jes_real_specs = (
+        [
+            (
+                float(
+                    config["experiments"]["jet_energy_scale"]["parent_mass_gev"]
+                ),
+                float(shift),
+            )
+            for shift in config["experiments"]["jet_energy_scale"]["real_shifts"]
         ]
-    ]
+        if "jes" in enabled
+        else []
+    )
+    grid_surface_specs = (
+        [
+            (float(point["mass_gev"]), float(point["jes_shift"]))
+            for point in config["experiments"]["mass_jes_grid"]["benchmark_points"]
+        ]
+        if "mass_jes_grid" in enabled
+        else []
+    )
+    grid_profile_specs = (
+        [
+            (mass, float(jes_shift))
+            for mass in real_masses
+            for jes_shift in config["experiments"]["mass_jes_grid"][
+                "evaluation_jes_shifts"
+            ]
+        ]
+        if "mass_jes_grid" in enabled
+        else []
+    )
     grid_real_specs = sorted(set(grid_surface_specs + grid_profile_specs))
     total_datasets = (
         len(template_masses)
@@ -188,7 +232,8 @@ def run_generation(
         save_dataset(dataset_path(output_dir, "real", mass), dataset)
         print(f"[generate] real mass={mass:g} GeV events={len(dataset['observables'])}", flush=True)
 
-    print("[generate] starting mass x JES hypothesis templates", flush=True)
+    if grid_specs:
+        print("[generate] starting mass x JES hypothesis templates", flush=True)
     for mass, jes_shift in grid_specs:
         dataset = generate_events(
             mass,
@@ -206,7 +251,8 @@ def run_generation(
             flush=True,
         )
 
-    print("[generate] starting JES pseudo-data", flush=True)
+    if jes_real_specs:
+        print("[generate] starting JES pseudo-data", flush=True)
     for mass, jes_shift in jes_real_specs:
         dataset = generate_events(
             mass,
@@ -219,7 +265,8 @@ def run_generation(
             hypothesis_dataset_path(output_dir, "jes_real", mass, jes_shift), dataset
         )
 
-    print("[generate] starting mass x JES benchmark pseudo-data", flush=True)
+    if grid_real_specs:
+        print("[generate] starting mass x JES benchmark pseudo-data", flush=True)
     for mass, jes_shift in grid_real_specs:
         dataset = generate_events(
             mass,
@@ -319,6 +366,9 @@ def run_training(
 
     template_masses = [float(value) for value in config["data"]["template_masses_gev"]]
     real_masses = expand_mass_grid(config["data"]["real_masses_gev"])
+    systematics_enabled = bool(
+        enabled_experiments(config) & {"jes", "mass_jes_grid"}
+    )
     template_datasets = _load_all_datasets(output_dir, "templates", template_masses)
     real_datasets = _load_all_datasets(output_dir, "real", real_masses)
     train, validation = _split_templates(
@@ -375,73 +425,94 @@ def run_training(
         metric_logger,
     )
 
-    jes_shifts = [float(value) for value in config["experiments"]["jes_template_shifts"]]
-    hypothesis_coordinates = sorted([
-        (mass, shift) for mass in template_masses for shift in jes_shifts
-    ])
-    hypothesis_datasets = _load_hypothesis_datasets(
-        output_dir, "hypothesis_templates", hypothesis_coordinates
-    )
-    hypothesis_train, hypothesis_validation = _split_templates(
-        hypothesis_datasets,
-        float(config["data"]["validation_fraction"]),
-        np_rng,
-    )
-    hypothesis_condition_scaler = Standardizer.fit(hypothesis_train["observables"])
-    hypothesis_full_train_raw = np.concatenate(
-        [hypothesis_train["observables"], hypothesis_train["neutrino_target"]], axis=1
-    )
-    hypothesis_full_validation_raw = np.concatenate(
-        [
-            hypothesis_validation["observables"],
-            hypothesis_validation["neutrino_target"],
-        ],
-        axis=1,
-    )
-    hypothesis_full_scaler = Standardizer.fit(hypothesis_full_train_raw)
-    hypothesis_train_conditions = hypothesis_condition_scaler.transform(
-        hypothesis_train["observables"]
-    )
-    hypothesis_validation_conditions = hypothesis_condition_scaler.transform(
-        hypothesis_validation["observables"]
-    )
-    hypothesis_full_train = hypothesis_full_scaler.transform(hypothesis_full_train_raw)
-    hypothesis_full_validation = hypothesis_full_scaler.transform(
-        hypothesis_full_validation_raw
-    )
-    hypothesis_class_count = len(hypothesis_coordinates)
-    hypothesis_observed_profiler = TemplateDiscriminator(
-        hypothesis_train_conditions.shape[1], hypothesis_class_count, hidden_dims
-    )
-    hypothesis_full_profiler = TemplateDiscriminator(
-        hypothesis_full_train.shape[1], hypothesis_class_count, hidden_dims
-    )
-    print("[train] fitting visible mass x JES discriminator", flush=True)
-    hypothesis_observed_history = train_discriminator(
-        hypothesis_observed_profiler,
-        hypothesis_train_conditions,
-        hypothesis_train["labels"],
-        hypothesis_validation_conditions,
-        hypothesis_validation["labels"],
-        config["training"],
-        device,
-        np_rng,
-        "mass-jes-visible-profiler",
-        metric_logger,
-    )
-    print("[train] fitting visible+truth mass x JES discriminator", flush=True)
-    hypothesis_full_history = train_discriminator(
-        hypothesis_full_profiler,
-        hypothesis_full_train,
-        hypothesis_train["labels"],
-        hypothesis_full_validation,
-        hypothesis_validation["labels"],
-        config["training"],
-        device,
-        np_rng,
-        "mass-jes-full-profiler",
-        metric_logger,
-    )
+    hypothesis_grid = None
+    hypothesis_histories: dict[str, dict[str, list[float]]] = {}
+    if systematics_enabled:
+        jes_shifts = [
+            float(value) for value in config["experiments"]["jes_template_shifts"]
+        ]
+        hypothesis_coordinates = sorted(
+            [(mass, shift) for mass in template_masses for shift in jes_shifts]
+        )
+        hypothesis_datasets = _load_hypothesis_datasets(
+            output_dir, "hypothesis_templates", hypothesis_coordinates
+        )
+        hypothesis_train, hypothesis_validation = _split_templates(
+            hypothesis_datasets,
+            float(config["data"]["validation_fraction"]),
+            np_rng,
+        )
+        hypothesis_condition_scaler = Standardizer.fit(
+            hypothesis_train["observables"]
+        )
+        hypothesis_full_train_raw = np.concatenate(
+            [hypothesis_train["observables"], hypothesis_train["neutrino_target"]],
+            axis=1,
+        )
+        hypothesis_full_validation_raw = np.concatenate(
+            [
+                hypothesis_validation["observables"],
+                hypothesis_validation["neutrino_target"],
+            ],
+            axis=1,
+        )
+        hypothesis_full_scaler = Standardizer.fit(hypothesis_full_train_raw)
+        hypothesis_train_conditions = hypothesis_condition_scaler.transform(
+            hypothesis_train["observables"]
+        )
+        hypothesis_validation_conditions = hypothesis_condition_scaler.transform(
+            hypothesis_validation["observables"]
+        )
+        hypothesis_full_train = hypothesis_full_scaler.transform(
+            hypothesis_full_train_raw
+        )
+        hypothesis_full_validation = hypothesis_full_scaler.transform(
+            hypothesis_full_validation_raw
+        )
+        hypothesis_class_count = len(hypothesis_coordinates)
+        hypothesis_observed_profiler = TemplateDiscriminator(
+            hypothesis_train_conditions.shape[1], hypothesis_class_count, hidden_dims
+        )
+        hypothesis_full_profiler = TemplateDiscriminator(
+            hypothesis_full_train.shape[1], hypothesis_class_count, hidden_dims
+        )
+        print("[train] fitting visible mass x JES discriminator", flush=True)
+        hypothesis_observed_history = train_discriminator(
+            hypothesis_observed_profiler,
+            hypothesis_train_conditions,
+            hypothesis_train["labels"],
+            hypothesis_validation_conditions,
+            hypothesis_validation["labels"],
+            config["training"],
+            device,
+            np_rng,
+            "mass-jes-visible-profiler",
+            metric_logger,
+        )
+        print("[train] fitting visible+truth mass x JES discriminator", flush=True)
+        hypothesis_full_history = train_discriminator(
+            hypothesis_full_profiler,
+            hypothesis_full_train,
+            hypothesis_train["labels"],
+            hypothesis_full_validation,
+            hypothesis_validation["labels"],
+            config["training"],
+            device,
+            np_rng,
+            "mass-jes-full-profiler",
+            metric_logger,
+        )
+        hypothesis_histories = {
+            "hypothesis_observed_profiler": hypothesis_observed_history,
+            "hypothesis_full_profiler": hypothesis_full_history,
+        }
+        hypothesis_grid = {
+            "coordinates": hypothesis_coordinates,
+            "condition_scaler": hypothesis_condition_scaler.as_dict(),
+            "full_scaler": hypothesis_full_scaler.as_dict(),
+            "observed_profiler_state": hypothesis_observed_profiler.cpu().state_dict(),
+            "full_profiler_state": hypothesis_full_profiler.cpu().state_dict(),
+        }
 
     flow = ConditionalFlow(
         target_dim=train_targets.shape[1],
@@ -497,16 +568,9 @@ def run_training(
             "full_profiler": full_history,
             "flow": flow_history,
             "dgpo": dgpo_history,
-            "hypothesis_observed_profiler": hypothesis_observed_history,
-            "hypothesis_full_profiler": hypothesis_full_history,
+            **hypothesis_histories,
         },
-        "hypothesis_grid": {
-            "coordinates": hypothesis_coordinates,
-            "condition_scaler": hypothesis_condition_scaler.as_dict(),
-            "full_scaler": hypothesis_full_scaler.as_dict(),
-            "observed_profiler_state": hypothesis_observed_profiler.cpu().state_dict(),
-            "full_profiler_state": hypothesis_full_profiler.cpu().state_dict(),
-        },
+        "hypothesis_grid": hypothesis_grid,
     }
     torch.save(checkpoint, output_dir / "models.pt")
     history_rows = []
@@ -694,6 +758,9 @@ def run_evaluation(
     start_time = time.perf_counter()
     output_dir = Path(config["output_dir"])
     device = choose_device(str(config["training"]["device"]))
+    systematics_enabled = bool(
+        enabled_experiments(config) & {"jes", "mass_jes_grid"}
+    )
     checkpoint_path = output_dir / "models.pt"
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Missing {checkpoint_path}; run the train stage first")
@@ -718,6 +785,10 @@ def run_evaluation(
     spectra: dict[float, dict[str, np.ndarray]] = {}
     profile_rows = []
     likelihood_profiles: dict[float, dict[str, np.ndarray]] = {}
+    momentum_diagnostic: dict[str, np.ndarray] | None = None
+    momentum_diagnostic_mass = float(
+        config["figures"]["momentum_diagnostic_mass_gev"]
+    )
 
     print(f"[evaluate] device={device}", flush=True)
     for mass, dataset in sorted(real_datasets.items()):
@@ -747,6 +818,11 @@ def run_evaluation(
             "dgpo": dgpo_target,
             "oracle": dataset["neutrinos_truth"][..., 1:],
         }
+        if np.isclose(mass, momentum_diagnostic_mass):
+            momentum_diagnostic = {
+                "truth": dataset["neutrino_target"],
+                **method_targets,
+            }
         spectra[mass] = {}
         for method, target in method_targets.items():
             reconstructed = reconstruct_parent_masses(
@@ -830,6 +906,101 @@ def run_evaluation(
         writer = csv.DictWriter(stream, fieldnames=list(profile_rows[0]))
         writer.writeheader()
         writer.writerows(profile_rows)
+    if momentum_diagnostic is None:
+        raise ValueError(
+            f"Momentum diagnostic mass {momentum_diagnostic_mass:g} GeV "
+            "is not present in data.real_masses_gev"
+        )
+
+    if not systematics_enabled:
+        summary = {}
+        for method in ["baseline", "sft", "dgpo", "oracle"]:
+            selected = [row for row in metrics if row["method"] == method]
+            summary[method] = {
+                "mean_absolute_bias_gev": float(
+                    np.mean([abs(float(row["bias_gev"])) for row in selected])
+                ),
+                "mean_resolution_gev": float(
+                    np.mean([float(row["resolution_gev"]) for row in selected])
+                ),
+                "mean_relative_precision_percent": float(
+                    np.mean(
+                        [
+                            float(row["relative_precision_percent"])
+                            for row in selected
+                        ]
+                    )
+                ),
+            }
+        summary["profile_alignment"] = {
+            "sft_mean_absolute_difference_gev": float(
+                np.mean(
+                    [
+                        abs(
+                            row["sft_full_profile_mass_gev"]
+                            - row["observed_profile_mass_gev"]
+                        )
+                        for row in profile_rows
+                    ]
+                )
+            ),
+            "dgpo_mean_absolute_difference_gev": float(
+                np.mean(
+                    [
+                        abs(
+                            row["dgpo_full_profile_mass_gev"]
+                            - row["observed_profile_mass_gev"]
+                        )
+                        for row in profile_rows
+                    ]
+                )
+            ),
+        }
+        with (output_dir / "summary.json").open("w", encoding="utf-8") as stream:
+            json.dump(summary, stream, indent=2)
+        figure_paths = []
+        figure_paths.extend(
+            plot_momentum_reconstruction_diagnostics(
+                momentum_diagnostic,
+                momentum_diagnostic_mass,
+                config,
+                output_dir,
+            )
+        )
+        figure_paths.extend(plot_mass_spectra(spectra, config, output_dir))
+        figure_paths.extend(
+            plot_final_benchmark(metrics, profile_rows, config, output_dir)
+        )
+        _, likelihood_paths = plot_sbi_likelihood_diagnostics(
+            likelihood_profiles,
+            profile_rows,
+            checkpoint["history"],
+            checkpoint["template_masses"],
+            config,
+            output_dir,
+        )
+        figure_paths.extend(likelihood_paths)
+        if tracker is not None:
+            tracker.log_figures(figure_paths, "evaluation")
+            tracker.update_summary(
+                {
+                    "dgpo_mean_absolute_bias_gev": summary["dgpo"][
+                        "mean_absolute_bias_gev"
+                    ],
+                    "dgpo_mean_resolution_gev": summary["dgpo"][
+                        "mean_resolution_gev"
+                    ],
+                    "dgpo_profile_alignment_gev": summary["profile_alignment"][
+                        "dgpo_mean_absolute_difference_gev"
+                    ],
+                }
+            )
+        print(
+            f"[evaluate] mass-only workflow finished in "
+            f"{time.perf_counter() - start_time:.1f} s",
+            flush=True,
+        )
+        return
 
     (
         hypothesis_coordinates,
@@ -1076,6 +1247,14 @@ def run_evaluation(
     with (output_dir / "summary.json").open("w", encoding="utf-8") as stream:
         json.dump(summary, stream, indent=2)
     figure_paths = []
+    figure_paths.extend(
+        plot_momentum_reconstruction_diagnostics(
+            momentum_diagnostic,
+            momentum_diagnostic_mass,
+            config,
+            output_dir,
+        )
+    )
     figure_paths.extend(plot_mass_spectra(spectra, config, output_dir))
     figure_paths.extend(plot_final_benchmark(metrics, profile_rows, config, output_dir))
     _, likelihood_paths = plot_sbi_likelihood_diagnostics(

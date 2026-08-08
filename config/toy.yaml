@@ -1,30 +1,21 @@
 seed: 240513
-output_dir: artifacts/toy
+output_dir: artifacts/toy_mass_only_momentum
 
 data:
-  template_masses_gev: [200.0, 500.0, 800.0]
+  template_masses_gev: [400.0, 500.0, 600.0]
   real_masses_gev:
-    start: 200.0
-    stop: 800.0
+    start: 400.0
+    stop: 600.0
     step: 25.0
   template_events_per_mass: 10000
   real_events_per_mass: 10000
   validation_fraction: 0.2
 
 experiments:
-  jes_template_shifts: [-0.10, 0.0, 0.10]
-  jet_energy_scale:
-    parent_mass_gev: 500.0
-    real_shifts: [-0.10, -0.075, -0.05, -0.025, 0.0, 0.025, 0.05, 0.075, 0.10]
-  mass_jes_grid:
-    evaluation_jes_shifts: [-0.10, -0.05, 0.0, 0.05, 0.10]
-    benchmark_points:
-      - {mass_gev: 350.0, jes_shift: -0.05}
-      - {mass_gev: 500.0, jes_shift: 0.0}
-      - {mass_gev: 650.0, jes_shift: 0.05}
+  enabled: [mass]
 
 physics:
-  parent_energy:
+  parent_momentum:
     distribution: double_exponential
     center_gev: 1000.0
     scale_gev: 150.0
@@ -75,8 +66,9 @@ figures:
   raster_dpi: 600
   preview_dpi: 300
   formats: [svg, pdf, tiff, png]
-  likelihood_masses_gev: [200.0, 350.0, 500.0, 650.0, 800.0]
-  reconstruction_heatmap_methods: [baseline, sft, dgpo, oracle]
+  likelihood_masses_gev: [400.0, 450.0, 500.0, 550.0, 600.0]
+  momentum_diagnostic_mass_gev: 500.0
+  momentum_scatter_points: 2000
 
 logging:
   wandb:
@@ -84,6 +76,6 @@ logging:
     mode: offline
     project: sbi-reasoning
     entity: null
-    group: mass-200-500-800
+    group: mass-only-400-500-600-momentum
     name: null
-    tags: [toy-model, dgpo, neutrino-reconstruction]
+    tags: [toy-model, mass-only, dgpo, neutrino-reconstruction]

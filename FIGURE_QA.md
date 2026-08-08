@@ -4,7 +4,9 @@
 
 Core claim: the generator closes at truth level, visible-plus-invisible information sharpens the classifier profile, and DGPO can be benchmarked by mass bias, resolution, and profile alignment under nominal and JES-shifted detector response.
 
-Archetype: quantitative grid. `final_benchmark`, `mass_jes_profile_scatter`, and `mass_jes_reconstruction_heatmaps` are the hero figures; generator, one-dimensional likelihood, JES, and two-dimensional likelihood panels are diagnostics.
+Early-trial generator claim: direct parent-momentum sampling produces the configured mass-independent double-exponential spectrum while preserving the parent mass shell and two-body truth closure for the 400, 500, and 600 GeV templates.
+
+Archetype: quantitative grid. For the mass-only early trial, `momentum_reconstruction_diagnostics` and `final_benchmark` are the hero figures. For the complete systematics workflow, `mass_jes_profile_scatter` and `mass_jes_reconstruction_heatmaps` are additional hero figures; generator and likelihood panels are diagnostics.
 
 ## Nature-style checks
 
@@ -30,6 +32,7 @@ Archetype: quantitative grid. `final_benchmark`, `mass_jes_profile_scatter`, and
 - Reconstructed peak: Gaussian-plus-offset fit; fallback is the median if the fit fails.
 - Resolution: fitted Gaussian sigma, or central 68% half-width for the fallback. It is not a confidence interval on the peak.
 - Bias: fitted reconstructed peak minus truth parent mass.
+- Momentum diagnostic: scatter panels show the same configured sample of neutrino entries for each method; the summary panel reports mean residual bias with one standard deviation, not uncertainty on the mean.
 - Mass x JES reconstruction heatmaps: each cell is fitted independently from the reconstructed event-level mass spectrum at that truth grid point; these are not classifier-profile bias or profile uncertainty.
 - JES scatter error bar: standard deviation of mass bias across evaluated truth masses at fixed JES shift. It is not a standard error.
 - Baselines: MET-split neutrino momentum, supervised conditional flow, and detector oracle as labelled.
@@ -38,5 +41,6 @@ Archetype: quantitative grid. `final_benchmark`, `mass_jes_profile_scatter`, and
 
 - Unit tests cover two-body mass closure, truncated double-exponential energy sampling, JES-to-MET propagation, and the DGPO gradient direction.
 - The complete smoke configuration has passed all stages and rendered every figure.
+- A separate mass-only smoke integration has passed generation, training, evaluation, and momentum-figure rendering without creating JES or mass x JES datasets.
 - Smoke outputs validate integration and layout only; they are not physics results because the smoke run uses 256 template events and two training epochs.
 - Final NERSC numerical results and the resulting figure content remain to be produced with `config/nersc.yaml`.

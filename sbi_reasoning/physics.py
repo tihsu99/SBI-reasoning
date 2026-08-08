@@ -28,6 +28,33 @@ def _boost(four_vector: np.ndarray, beta: np.ndarray) -> np.ndarray:
     return np.concatenate([boosted_energy, boosted_momentum], axis=-1)
 
 
+def _sample_truncated_double_exponential(
+    minimum_gev: float,
+    event_count: int,
+    distribution_config: dict[str, Any],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    distribution = str(distribution_config["distribution"])
+    if distribution != "double_exponential":
+        raise ValueError(f"Unsupported parent distribution: {distribution}")
+    center = float(distribution_config["center_gev"])
+    scale = float(distribution_config["scale_gev"])
+    if scale <= 0.0:
+        raise ValueError("Parent distribution scale must be positive")
+
+    if minimum_gev < center:
+        lower_cdf = 0.5 * np.exp((minimum_gev - center) / scale)
+    else:
+        lower_cdf = 1.0 - 0.5 * np.exp(-(minimum_gev - center) / scale)
+    probability = rng.uniform(lower_cdf, 1.0, size=event_count)
+    values = np.where(
+        probability < 0.5,
+        center + scale * np.log(2.0 * probability),
+        center - scale * np.log(2.0 * (1.0 - probability)),
+    )
+    return np.maximum(values, minimum_gev)
+
+
 def sample_parent_energy(
     parent_mass_gev: float,
     event_count: int,
@@ -35,25 +62,20 @@ def sample_parent_energy(
     rng: np.random.Generator,
 ) -> np.ndarray:
     """Sample a two-sided exponential energy, conditioned on the mass shell."""
-    distribution = str(energy_config["distribution"])
-    if distribution != "double_exponential":
-        raise ValueError(f"Unsupported parent-energy distribution: {distribution}")
-    center = float(energy_config["center_gev"])
-    scale = float(energy_config["scale_gev"])
-    if scale <= 0.0:
-        raise ValueError("Parent-energy scale must be positive")
-
-    if parent_mass_gev < center:
-        lower_cdf = 0.5 * np.exp((parent_mass_gev - center) / scale)
-    else:
-        lower_cdf = 1.0 - 0.5 * np.exp(-(parent_mass_gev - center) / scale)
-    probability = rng.uniform(lower_cdf, 1.0, size=event_count)
-    energy = np.where(
-        probability < 0.5,
-        center + scale * np.log(2.0 * probability),
-        center - scale * np.log(2.0 * (1.0 - probability)),
+    return _sample_truncated_double_exponential(
+        parent_mass_gev, event_count, energy_config, rng
     )
-    return np.maximum(energy, parent_mass_gev)
+
+
+def sample_parent_momentum(
+    event_count: int,
+    momentum_config: dict[str, Any],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Sample a non-negative two-sided exponential momentum magnitude."""
+    return _sample_truncated_double_exponential(
+        0.0, event_count, momentum_config, rng
+    )
 
 
 def generate_events(
@@ -69,13 +91,19 @@ def generate_events(
     if parent_mass_gev <= lepton_mass + neutrino_mass:
         raise ValueError("Parent mass must exceed the sum of daughter masses")
 
-    parent_energy = sample_parent_energy(
-        parent_mass_gev,
-        event_count,
-        physics["parent_energy"],
-        rng,
-    )
-    parent_p = np.sqrt(np.maximum(parent_energy**2 - parent_mass_gev**2, 0.0))
+    if "parent_momentum" in physics:
+        parent_p = sample_parent_momentum(
+            event_count, physics["parent_momentum"], rng
+        )
+        parent_energy = np.sqrt(parent_p**2 + parent_mass_gev**2)
+    else:
+        parent_energy = sample_parent_energy(
+            parent_mass_gev,
+            event_count,
+            physics["parent_energy"],
+            rng,
+        )
+        parent_p = np.sqrt(np.maximum(parent_energy**2 - parent_mass_gev**2, 0.0))
     parent_direction = _isotropic_directions(rng, (event_count,))
     parent_momentum = parent_p[:, None] * parent_direction
     parent_momentum = np.stack([parent_momentum, -parent_momentum], axis=1)
@@ -132,6 +160,7 @@ def generate_events(
         "leptons_reco": leptons_reco.astype(np.float32),
         "neutrinos_truth": neutrinos_truth.astype(np.float32),
         "parent_energy_gev": parent_energy.astype(np.float32),
+        "parent_momentum_gev": parent_p.astype(np.float32),
         "parent_mass_gev": np.full(event_count, parent_mass_gev, dtype=np.float32),
         "visible_energy_scale_shift": np.full(
             event_count, visible_energy_scale_shift, dtype=np.float32
