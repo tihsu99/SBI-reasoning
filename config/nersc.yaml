@@ -2,22 +2,22 @@ seed: 240513
 output_dir: /pscratch/sd/t/tihsu/database/SBI-reasoning
 
 data:
-  template_masses_gev: [200.0, 500.0, 800.0]
+  template_masses_gev: [300.0, 500.0, 700.0]
   real_masses_gev:
-    start: 200.0
-    stop: 800.0
+    start: 300.0
+    stop: 700.0
     step: 25.0
-  template_events_per_mass: 100000
-  real_events_per_mass: 20000
+  template_events_per_mass: 200000
+  real_events_per_mass: 50000
   validation_fraction: 0.2
 
 experiments:
   jes_template_shifts: [-0.10, 0.0, 0.10]
   jet_energy_scale:
     parent_mass_gev: 500.0
-    real_shifts: [-0.10, -0.05, 0.0, 0.05, 0.10]
+    real_shifts: [-0.10, -0.075, -0.05, -0.025, 0.0, 0.025, 0.05, 0.075, 0.10]
   mass_jes_grid:
-    evaluation_jes_shifts: [-0.10, 0.0, 0.10]
+    evaluation_jes_shifts: [-0.10, -0.05, 0.0, 0.05, 0.10]
     benchmark_points:
       - {mass_gev: 350.0, jes_shift: -0.05}
       - {mass_gev: 500.0, jes_shift: 0.0}
@@ -28,10 +28,10 @@ physics:
     distribution: double_exponential
     center_gev: 1000.0
     scale_gev: 150.0
-  lepton_mass_gev: 0.0
+  lepton_mass_gev: 0.1
   neutrino_mass_gev: 0.0
   lepton_relative_resolution: 0.02
-  met_resolution_gev: 15.0
+  met_resolution_gev: 5.0
 
 model:
   hidden_dims: [256, 256, 128]
@@ -41,14 +41,14 @@ training:
   device: cuda
   mixed_precision: bf16
   batch_size: 4096
-  profiler_epochs: 100
+  profiler_epochs: 200
   profiler_learning_rate: 0.001
   flow_epochs: 200
   flow_learning_rate: 0.001
   weight_decay: 0.0001
 
 sampling:
-  ode_steps: 20
+  ode_steps: 30
   output_clip_sigma: 6.0
 
 dgpo:

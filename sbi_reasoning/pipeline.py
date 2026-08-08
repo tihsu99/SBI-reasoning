@@ -989,6 +989,9 @@ def run_evaluation(
             profiled_mass = profile_vertex_from_scores(
                 template_masses, surface.min(axis=0)
             )
+            profiled_jes_shift = profile_vertex_from_scores(
+                template_shifts, surface.min(axis=1)
+            )
             grid_profile_rows.append(
                 {
                     "method": method,
@@ -996,6 +999,8 @@ def run_evaluation(
                     "truth_jes_shift": truth_shift,
                     "profiled_mass_gev": profiled_mass,
                     "bias_gev": profiled_mass - truth_mass,
+                    "profiled_jes_shift": profiled_jes_shift,
+                    "jes_bias": profiled_jes_shift - truth_shift,
                 }
             )
         print(

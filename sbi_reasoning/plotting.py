@@ -10,6 +10,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
+from matplotlib.colors import to_rgb
 
 from .physics import fit_mass_peak, reconstruct_parent_masses
 
@@ -21,6 +23,7 @@ COLORS = {
     "light_blue": "#3775BA",
     "red": "#B64342",
     "teal": "#42949E",
+    "orange": "#E69F00",
     "light": "#CFCECE",
 }
 
@@ -37,6 +40,22 @@ METHOD_LABELS = {
     "dgpo": "Flow + DGPO",
     "oracle": "Detector oracle",
 }
+
+
+def _shade_color(
+    base_color: str, value: float, minimum: float, maximum: float
+) -> tuple[float, float, float]:
+    base = np.asarray(to_rgb(base_color))
+    if np.isclose(maximum, minimum):
+        return tuple(base)
+    position = (value - minimum) / (maximum - minimum)
+    if position <= 0.5:
+        white_fraction = 0.58 * (1.0 - 2.0 * position)
+        shaded = (1.0 - white_fraction) * base + white_fraction
+    else:
+        black_fraction = 0.28 * (2.0 * position - 1.0)
+        shaded = (1.0 - black_fraction) * base
+    return tuple(shaded)
 
 
 def apply_nature_style() -> None:
@@ -148,7 +167,15 @@ def plot_dataset_sanity(
     center = float(config["physics"]["parent_energy"]["center_gev"])
     axes[0, 0].axvline(center, color=COLORS["dark"], linestyle="--", linewidth=1.0)
     axes[0, 0].set(xlabel="Parent energy (GeV)", ylabel="Probability density")
-    axes[0, 0].legend(title="Parent mass", ncol=1)
+    mass_handles, mass_labels = axes[0, 0].get_legend_handles_labels()
+    figure.legend(
+        mass_handles,
+        mass_labels,
+        title="Parent mass",
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=len(masses),
+    )
 
     closure_by_mass: dict[float, np.ndarray] = {}
     for mass in masses:
@@ -250,7 +277,7 @@ def plot_dataset_sanity(
     )
     _clean_axes(axes)
     _panel_labels(axes)
-    figure.subplots_adjust(left=0.09, right=0.98, bottom=0.10, top=0.96, wspace=0.32, hspace=0.38)
+    figure.subplots_adjust(left=0.09, right=0.98, bottom=0.10, top=0.90, wspace=0.32, hspace=0.38)
     paths = save_publication_figure(
         figure, output_dir / "dataset_truth_mass_sanity", figure_config
     )
@@ -272,7 +299,14 @@ def plot_training_history(
     axes[0, 0].plot(observed_history["loss"], color=COLORS["blue"], label="Visible")
     axes[0, 0].plot(full_history["loss"], color=COLORS["red"], label="Visible + invisible")
     axes[0, 0].set(ylabel="Cross-entropy", xlabel="Epoch")
-    axes[0, 0].legend()
+    method_handles, method_labels = axes[0, 0].get_legend_handles_labels()
+    figure.legend(
+        method_handles,
+        method_labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=2,
+    )
     axes[0, 1].plot(observed_history["validation_accuracy"], color=COLORS["blue"])
     axes[0, 1].plot(full_history["validation_accuracy"], color=COLORS["red"])
     axes[0, 1].set(ylabel="Validation accuracy", xlabel="Epoch", ylim=(0.0, 1.02))
@@ -287,7 +321,7 @@ def plot_training_history(
     axes[1, 1].set(ylabel="DGPO profile reward", xlabel="Iteration")
     _clean_axes(axes)
     _panel_labels(axes)
-    figure.subplots_adjust(left=0.09, right=0.98, bottom=0.11, top=0.96, wspace=0.32, hspace=0.38)
+    figure.subplots_adjust(left=0.09, right=0.98, bottom=0.11, top=0.90, wspace=0.32, hspace=0.38)
     return save_publication_figure(figure, output_dir / "training_history", figure_config)
 
 
@@ -297,6 +331,17 @@ def _quadratic_curve(template_masses: np.ndarray, values: np.ndarray) -> tuple[n
     dense_values = np.polyval(coefficients, dense_mass)
     dense_values -= dense_values.min()
     return dense_mass, dense_values
+
+
+def _profile_vertex(coordinates: np.ndarray, scores: np.ndarray) -> float:
+    quadratic, linear, _ = np.polyfit(coordinates, scores, 2)
+    if quadratic <= 0.0:
+        return float(coordinates[np.argmin(scores)])
+    return float(
+        np.clip(
+            -linear / (2.0 * quadratic), coordinates.min(), coordinates.max()
+        )
+    )
 
 
 def plot_sbi_likelihood_diagnostics(
@@ -336,7 +381,6 @@ def plot_sbi_likelihood_diagnostics(
         label="Visible + truth invisible",
     )
     accuracy_axis.set(xlabel="Epoch", ylabel="Validation accuracy", ylim=(0.0, 1.02))
-    accuracy_axis.legend(loc="lower right")
 
     truth = np.asarray([row["truth_mass_gev"] for row in profile_rows])
     visible = np.asarray([row["observed_profile_mass_gev"] for row in profile_rows])
@@ -347,7 +391,6 @@ def plot_sbi_likelihood_diagnostics(
     limits = (min(template_masses) - padding, max(template_masses) + padding)
     estimate_axis.plot(limits, limits, color=COLORS["dark"], linestyle="--", linewidth=1.0)
     estimate_axis.set(xlim=limits, ylim=limits, xlabel="Truth parent mass (GeV)", ylabel="Profile estimate (GeV)")
-    estimate_axis.legend(loc="upper left")
 
     template_array = np.asarray(template_masses, dtype=np.float64)
     csv_rows: list[dict[str, float | str]] = []
@@ -376,7 +419,21 @@ def plot_sbi_likelihood_diagnostics(
             axis.set_ylabel(r"$-2\Delta\langle\log p\rangle$")
         else:
             axis.tick_params(labelleft=False)
-    likelihood_axes[0].legend(loc="upper left", bbox_to_anchor=(0.0, -0.34), ncol=2)
+    method_handles, method_labels = accuracy_axis.get_legend_handles_labels()
+    figure.legend(
+        method_handles,
+        method_labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=2,
+    )
+    figure.text(
+        0.99,
+        0.02,
+        "Markers: evaluated templates; curves: quadratic interpolation",
+        ha="right",
+        fontsize=6.5,
+    )
     estimate_axis.text(
         0.98,
         0.04,
@@ -387,7 +444,7 @@ def plot_sbi_likelihood_diagnostics(
     )
     _clean_axes(axes)
     _panel_labels([accuracy_axis, estimate_axis, likelihood_axes[0]])
-    figure.subplots_adjust(left=0.08, right=0.99, bottom=0.18, top=0.96)
+    figure.subplots_adjust(left=0.08, right=0.99, bottom=0.11, top=0.90)
     paths = save_publication_figure(
         figure, output_dir / "sbi_likelihood_diagnostics", figure_config
     )
@@ -427,10 +484,17 @@ def plot_mass_spectra(
         axis.set_ylabel("Probability density")
     for axis in axes[len(selected):]:
         axis.set_visible(False)
-    axes[0].legend(ncol=2)
+    method_handles, method_labels = axes[0].get_legend_handles_labels()
+    figure.legend(
+        method_handles,
+        method_labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=4,
+    )
     _clean_axes(axes)
     _panel_labels(axes)
-    figure.subplots_adjust(left=0.09, right=0.99, bottom=0.10, top=0.96, wspace=0.35, hspace=0.43)
+    figure.subplots_adjust(left=0.09, right=0.99, bottom=0.10, top=0.88, wspace=0.35, hspace=0.43)
     return save_publication_figure(
         figure, output_dir / "reconstructed_mass_spectra", figure_config
     )
@@ -479,7 +543,6 @@ def plot_jes_likelihood_diagnostics(
         label="Visible + truth invisible",
     )
     accuracy_axis.set(xlabel="Epoch", ylabel="Grid validation accuracy", ylim=(0.0, 1.02))
-    accuracy_axis.legend(loc="lower right")
 
     truth = 100.0 * np.asarray([row["truth_jes_shift"] for row in estimate_rows])
     visible = 100.0 * np.asarray([row["visible_profile_jes_shift"] for row in estimate_rows])
@@ -489,7 +552,6 @@ def plot_jes_likelihood_diagnostics(
     limits = (100.0 * min(template_shifts), 100.0 * max(template_shifts))
     estimate_axis.plot(limits, limits, color=COLORS["dark"], linestyle="--", linewidth=1.0)
     estimate_axis.set(xlim=limits, ylim=limits, xlabel="Truth JES shift (%)", ylabel="Profile estimate (%)")
-    estimate_axis.legend(loc="upper left")
 
     template_percent = 100.0 * np.asarray(template_shifts)
     csv_rows: list[dict[str, float | str]] = []
@@ -518,10 +580,24 @@ def plot_jes_likelihood_diagnostics(
             axis.set_ylabel(r"$-2\Delta\langle\log p\rangle$")
         else:
             axis.tick_params(labelleft=False)
-    profile_axes[0].legend(loc="upper left", bbox_to_anchor=(0.0, -0.34), ncol=2)
+    method_handles, method_labels = accuracy_axis.get_legend_handles_labels()
+    figure.legend(
+        method_handles,
+        method_labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=2,
+    )
+    figure.text(
+        0.99,
+        0.02,
+        "Markers: evaluated templates; curves: quadratic interpolation",
+        ha="right",
+        fontsize=6.5,
+    )
     _clean_axes(axes)
     _panel_labels([accuracy_axis, estimate_axis, profile_axes[0]])
-    figure.subplots_adjust(left=0.08, right=0.99, bottom=0.18, top=0.96)
+    figure.subplots_adjust(left=0.08, right=0.99, bottom=0.11, top=0.90)
     paths = save_publication_figure(
         figure, output_dir / "jes_likelihood_diagnostics", figure_config
     )
@@ -540,12 +616,13 @@ def plot_mass_jes_likelihood_grid(
     figure_config = config["figures"]
     points = list(surfaces)
     width = float(figure_config.get("width_inches", 7.2))
-    figure, axes = plt.subplots(2, len(points), figsize=(width, 0.62 * width), squeeze=False)
+    figure, axes = plt.subplots(2, len(points), figsize=(width, 0.68 * width), squeeze=False)
     maximum = max(float(np.max(values[method])) for values in surfaces.values() for method in ["visible", "visible_truth"])
     mass_edges = _bin_edges(np.asarray(template_masses, dtype=np.float64))
     shift_percent = 100.0 * np.asarray(template_shifts, dtype=np.float64)
     shift_edges = _bin_edges(shift_percent)
     csv_rows: list[dict[str, float | str]] = []
+    estimate_rows: list[dict[str, float | str]] = []
     image = None
     for column, ((truth_mass, truth_shift), values) in enumerate(surfaces.items()):
         for row, (method, row_label) in enumerate(
@@ -584,6 +661,10 @@ def plot_mass_jes_likelihood_grid(
                             "negative_two_delta_mean_log_score": value,
                         }
                     )
+            mass_array = np.asarray(template_masses, dtype=np.float64)
+            shift_array = np.asarray(template_shifts, dtype=np.float64)
+            estimated_mass = _profile_vertex(mass_array, surface.min(axis=0))
+            estimated_shift = _profile_vertex(shift_array, surface.min(axis=1))
             axis.plot(
                 truth_mass,
                 100.0 * truth_shift,
@@ -593,6 +674,24 @@ def plot_mass_jes_likelihood_grid(
                 markeredgecolor="white",
                 markeredgewidth=0.5,
             )
+            axis.plot(
+                estimated_mass,
+                100.0 * estimated_shift,
+                marker="D",
+                markersize=4.8,
+                markerfacecolor="white",
+                markeredgecolor=COLORS["dark"],
+                markeredgewidth=0.9,
+            )
+            estimate_rows.append(
+                {
+                    "truth_mass_gev": truth_mass,
+                    "truth_jes_shift": truth_shift,
+                    "profile": method,
+                    "estimated_mass_gev": estimated_mass,
+                    "estimated_jes_shift": estimated_shift,
+                }
+            )
             axis.set_xticks(template_masses)
             axis.set_yticks(shift_percent)
             axis.set_xlabel("Mass hypothesis (GeV)")
@@ -600,19 +699,59 @@ def plot_mass_jes_likelihood_grid(
                 axis.set_ylabel(f"{row_label}\nJES hypothesis (%)")
             else:
                 axis.tick_params(labelleft=False)
+            estimate_label = (
+                f"Estimate ({estimated_mass:.0f} GeV, "
+                f"{100.0 * estimated_shift:+.1f}%)"
+            )
             if row == 0:
-                axis.set_title(f"Truth ({truth_mass:g} GeV, {100.0 * truth_shift:+.0f}%)")
+                axis.set_title(
+                    f"Truth ({truth_mass:g} GeV, {100.0 * truth_shift:+.0f}%)\n"
+                    f"{estimate_label}"
+                )
+            else:
+                axis.set_title(estimate_label)
     if image is not None:
-        colorbar = figure.colorbar(image, ax=axes.ravel().tolist(), fraction=0.025, pad=0.02)
+        colorbar_axis = figure.add_axes([0.89, 0.17, 0.018, 0.64])
+        colorbar = figure.colorbar(image, cax=colorbar_axis)
         colorbar.set_label(r"$-2\Delta\langle\log p\rangle$")
         colorbar.outline.set_linewidth(0.8)
+    figure.legend(
+        handles=[
+            Line2D(
+                [],
+                [],
+                linestyle="none",
+                marker="*",
+                markersize=7,
+                markerfacecolor=COLORS["red"],
+                markeredgecolor="white",
+                markeredgewidth=0.5,
+                label="Pseudo-data truth",
+            ),
+            Line2D(
+                [],
+                [],
+                linestyle="none",
+                marker="D",
+                markersize=4.8,
+                markerfacecolor="white",
+                markeredgecolor=COLORS["dark"],
+                markeredgewidth=0.9,
+                label="Profile estimate",
+            ),
+        ],
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=2,
+    )
     _clean_axes(axes)
     _panel_labels(axes)
-    figure.subplots_adjust(left=0.10, right=0.91, bottom=0.11, top=0.92, wspace=0.26, hspace=0.38)
+    figure.subplots_adjust(left=0.10, right=0.86, bottom=0.10, top=0.87, wspace=0.26, hspace=0.52)
     paths = save_publication_figure(
         figure, output_dir / "mass_jes_likelihood_grid", figure_config
     )
     _write_rows(output_dir / "mass_jes_likelihood_grid.csv", csv_rows)
+    _write_rows(output_dir / "mass_jes_profile_estimates.csv", estimate_rows)
     return csv_rows, paths
 
 
@@ -637,9 +776,14 @@ def plot_mass_jes_profile_scatter(
         "dgpo": "Full profile: flow + DGPO",
     }
     markers = {"visible": "o", "sft": "^", "dgpo": "s"}
+    method_colors = {
+        "visible": COLORS["blue"],
+        "sft": COLORS["orange"],
+        "dgpo": COLORS["red"],
+    }
     shifts = np.asarray([float(row["truth_jes_shift"]) for row in rows])
-    normalization = plt.Normalize(vmin=100.0 * shifts.min(), vmax=100.0 * shifts.max())
-    colormap = plt.get_cmap("coolwarm")
+    shift_minimum = float(shifts.min())
+    shift_maximum = float(shifts.max())
     truth_masses = np.asarray([float(row["truth_mass_gev"]) for row in rows])
     padding = 0.05 * (truth_masses.max() - truth_masses.min())
     limits = (truth_masses.min() - padding, truth_masses.max() + padding)
@@ -648,15 +792,20 @@ def plot_mass_jes_profile_scatter(
         profile_axis.scatter(
             [float(row["truth_mass_gev"]) for row in selected],
             [float(row["profiled_mass_gev"]) for row in selected],
-            c=[100.0 * float(row["truth_jes_shift"]) for row in selected],
-            cmap=colormap,
-            norm=normalization,
+            c=[
+                _shade_color(
+                    method_colors[method],
+                    float(row["truth_jes_shift"]),
+                    shift_minimum,
+                    shift_maximum,
+                )
+                for row in selected
+            ],
             marker=markers[method],
             s=18,
             linewidths=0.45,
             edgecolors="white",
-            alpha=0.82,
-            label=labels[method],
+            alpha=0.92,
         )
     profile_axis.plot(limits, limits, color=COLORS["dark"], linestyle="--", linewidth=1.0, label="Truth")
     profile_axis.set(
@@ -665,46 +814,130 @@ def plot_mass_jes_profile_scatter(
         xlabel="Truth parent mass (GeV)",
         ylabel="Profiled parent mass (GeV)",
     )
-    profile_axis.legend(loc="upper left")
-    colorbar = figure.colorbar(
-        plt.cm.ScalarMappable(norm=normalization, cmap=colormap),
-        ax=profile_axis,
-        fraction=0.045,
-        pad=0.025,
+    unique_shifts = sorted({float(value) for value in shifts})
+    shade_handles = [
+        Line2D(
+            [],
+            [],
+            linestyle="none",
+            marker="o",
+            markersize=4.3,
+            markerfacecolor=_shade_color(
+                COLORS["neutral"], shift, shift_minimum, shift_maximum
+            ),
+            markeredgecolor="white",
+            markeredgewidth=0.4,
+            label=f"{100.0 * shift:+.0f}%",
+        )
+        for shift in unique_shifts
+    ]
+    profile_axis.legend(
+        handles=shade_handles,
+        title="Truth JES shade",
+        loc="upper left",
+        ncol=len(shade_handles),
+        handletextpad=0.2,
+        columnspacing=0.6,
     )
-    colorbar.set_label("Truth JES shift (%)")
-    colorbar.outline.set_linewidth(0.8)
 
-    method_colors = {
-        "visible": COLORS["blue"],
-        "sft": COLORS["light_blue"],
-        "dgpo": COLORS["red"],
-    }
-    unique_shifts = sorted({float(row["truth_jes_shift"]) for row in rows})
+    mass_minimum = float(truth_masses.min())
+    mass_maximum = float(truth_masses.max())
+
+    def mass_marker_size(mass: float) -> float:
+        if np.isclose(mass_minimum, mass_maximum):
+            return 20.0
+        return 13.0 + 17.0 * (mass - mass_minimum) / (
+            mass_maximum - mass_minimum
+        )
+
     for method in methods:
-        means = []
-        spreads = []
-        for shift in unique_shifts:
-            biases = [
-                float(row["bias_gev"])
-                for row in rows
-                if row["method"] == method
-                and np.isclose(float(row["truth_jes_shift"]), shift)
-            ]
-            means.append(float(np.mean(biases)))
-            spreads.append(float(np.std(biases)))
-        bias_axis.errorbar(
-            100.0 * np.asarray(unique_shifts),
-            means,
-            yerr=spreads,
+        selected = sorted(
+            [row for row in rows if row["method"] == method],
+            key=lambda row: float(row["truth_mass_gev"]),
+            reverse=True,
+        )
+        bias_axis.scatter(
+            [100.0 * float(row["truth_jes_shift"]) for row in selected],
+            [100.0 * float(row["profiled_jes_shift"]) for row in selected],
+            c=[
+                _shade_color(
+                    method_colors[method],
+                    float(row["truth_jes_shift"]),
+                    shift_minimum,
+                    shift_maximum,
+                )
+                for row in selected
+            ],
             marker=markers[method],
-            markersize=3.3,
-            capsize=2,
-            color=method_colors[method],
+            s=[mass_marker_size(float(row["truth_mass_gev"])) for row in selected],
+            linewidths=0.45,
+            edgecolors="white",
+            alpha=0.92,
+        )
+    jes_limits = (100.0 * shifts.min(), 100.0 * shifts.max())
+    bias_axis.plot(
+        jes_limits,
+        jes_limits,
+        color=COLORS["dark"],
+        linestyle="--",
+        linewidth=1.0,
+    )
+    bias_axis.set(
+        xlim=jes_limits,
+        ylim=jes_limits,
+        xlabel="Truth JES shift (%)",
+        ylabel="Profiled JES shift (%)",
+    )
+    size_masses = [mass_minimum, 0.5 * (mass_minimum + mass_maximum), mass_maximum]
+    size_handles = [
+        Line2D(
+            [],
+            [],
+            linestyle="none",
+            marker="o",
+            markersize=np.sqrt(mass_marker_size(mass)),
+            markerfacecolor=COLORS["light"],
+            markeredgecolor=COLORS["dark"],
+            markeredgewidth=0.5,
+            label=f"{mass:.0f}",
+        )
+        for mass in size_masses
+    ]
+    bias_axis.legend(
+        handles=size_handles,
+        title="Truth mass (GeV)",
+        loc="lower right",
+    )
+    method_handles = [
+        Line2D(
+            [],
+            [],
+            linestyle="none",
+            marker=markers[method],
+            markersize=4.5,
+            markerfacecolor=method_colors[method],
+            markeredgecolor="white",
+            markeredgewidth=0.4,
             label=labels[method],
         )
-    bias_axis.axhline(0.0, color=COLORS["dark"], linestyle="--", linewidth=1.0)
-    bias_axis.set(xlabel="Truth JES shift (%)", ylabel="Mean mass bias $\\pm$ s.d. (GeV)")
+        for method in methods
+    ]
+    method_handles.append(
+        Line2D(
+            [],
+            [],
+            color=COLORS["dark"],
+            linestyle="--",
+            linewidth=1.0,
+            label="Truth",
+        )
+    )
+    figure.legend(
+        handles=method_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=4,
+    )
     profile_axis.text(
         0.99,
         0.03,
@@ -715,7 +948,7 @@ def plot_mass_jes_profile_scatter(
     )
     _clean_axes([profile_axis, bias_axis])
     _panel_labels([profile_axis, bias_axis])
-    figure.subplots_adjust(left=0.08, right=0.98, bottom=0.13, top=0.95, wspace=0.40)
+    figure.subplots_adjust(left=0.08, right=0.98, bottom=0.13, top=0.88, wspace=0.34)
     return save_publication_figure(
         figure, output_dir / "mass_jes_profile_scatter", figure_config
     )

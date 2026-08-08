@@ -14,7 +14,7 @@ Archetype: quantitative grid. `final_benchmark` and `mass_jes_profile_scatter` a
 - Panel labels: lowercase, bold, 8 pt.
 - Typeface: Arial with DejaVu Sans and Liberation Sans fallbacks.
 - Axes: units in parentheses; ticks and axis lines retained; background gridlines omitted.
-- Colour: colour-blind-aware blue, neutral, and warm accent; marker shape remains an independent method encoding in the mass x JES scatter.
+- Colour: colour-blind-aware blue, orange, and warm red identify methods; light-to-dark shades encode truth JES. Marker shape repeats the method encoding, and marker size identifies truth mass in the reciprocal JES panel.
 - Vector text: `svg.fonttype = none`; PDF TrueType font type 42.
 - Export: editable SVG and PDF; full configurations also write 600 dpi TIFF and 300 dpi PNG previews.
 - Source data: every quantitative diagnostic has a CSV file in the same output directory.

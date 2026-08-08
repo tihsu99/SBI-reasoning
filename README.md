@@ -45,7 +45,7 @@ Outputs are written under the configured `output_dir`:
 - `sbi_likelihood_diagnostics.*`: visible versus visible-plus-truth-invisible mass profiles;
 - `jes_likelihood_diagnostics.*`: visible versus visible-plus-truth-invisible JES profiles;
 - `mass_jes_likelihood_grid.*`: two-dimensional likelihood-score surfaces;
-- `mass_jes_profile_scatter.*`: truth versus profiled mass, with truth JES encoded by colour;
+- `mass_jes_profile_scatter.*`: truth versus profiled mass; hue identifies the method, light-to-dark shade identifies truth JES, and marker size identifies truth mass in the reciprocal JES panel;
 - `reconstructed_mass_spectra.*` and `final_benchmark.*`: final reconstruction benchmarks;
 - CSV files beside every diagnostic figure and `summary.json`: source data and aggregate metrics.
 
