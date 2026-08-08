@@ -1,5 +1,5 @@
 seed: 240513
-output_dir: artifacts/toy_mass_only_momentum
+output_dir: /pscratch/sd/t/tihsu/database/SBI-reasoning/toy-model
 
 data:
   template_masses_gev: [400.0, 500.0, 600.0]
