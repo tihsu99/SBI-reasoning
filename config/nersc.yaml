@@ -41,9 +41,9 @@ training:
   device: cuda
   mixed_precision: bf16
   batch_size: 4096
-  profiler_epochs: 30
+  profiler_epochs: 100
   profiler_learning_rate: 0.001
-  flow_epochs: 50
+  flow_epochs: 200
   flow_learning_rate: 0.001
   weight_decay: 0.0001
 
@@ -52,7 +52,7 @@ sampling:
   output_clip_sigma: 6.0
 
 dgpo:
-  iterations: 2500
+  iterations: 10000
   batch_size: 512
   group_size: 4
   condition_sampling: balanced
@@ -82,7 +82,7 @@ logging:
     enabled: true
     mode: online
     project: sbi-reasoning
-    entity: null
+    entity: ytchou97-university-of-washington
     group: mass-jes-dgpo
     name: null
     tags: [nersc, perlmutter, dgpo, mass-jes-grid]
