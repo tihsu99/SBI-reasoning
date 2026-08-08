@@ -22,16 +22,16 @@ physics:
   lepton_mass_gev: 0.0
   neutrino_mass_gev: 0.0
   lepton_relative_resolution: 0.02
-  met_resolution_gev: 15.0
+  met_resolution_gev: 5.0
 
 model:
-  hidden_dims: [128, 128]
+  hidden_dims: [128, 256, 128]
   time_embedding_dim: 16
 
 training:
   device: auto
   mixed_precision: none
-  batch_size: 512
+  batch_size: 2048
   profiler_epochs: 100
   profiler_learning_rate: 0.003
   flow_epochs: 100
@@ -44,7 +44,7 @@ sampling:
 
 dgpo:
   iterations: 900
-  batch_size: 256
+  batch_size: 1024
   group_size: 4
   condition_sampling: balanced
   learning_rate: 0.0001
