@@ -7,8 +7,8 @@ data:
     start: 400.0
     stop: 600.0
     step: 25.0
-  template_events_per_mass: 10000
-  real_events_per_mass: 10000
+  template_events_per_mass: 100000
+  real_events_per_mass: 100000
   validation_fraction: 0.2
 
 experiments:
@@ -32,10 +32,10 @@ training:
   device: auto
   mixed_precision: none
   batch_size: 512
-  profiler_epochs: 20
-  profiler_learning_rate: 0.001
-  flow_epochs: 30
-  flow_learning_rate: 0.001
+  profiler_epochs: 100
+  profiler_learning_rate: 0.003
+  flow_epochs: 100
+  flow_learning_rate: 0.003
   weight_decay: 0.0001
 
 sampling:
