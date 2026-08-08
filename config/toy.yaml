@@ -1,0 +1,88 @@
+seed: 240513
+output_dir: artifacts/toy
+
+data:
+  template_masses_gev: [200.0, 500.0, 800.0]
+  real_masses_gev:
+    start: 200.0
+    stop: 800.0
+    step: 25.0
+  template_events_per_mass: 10000
+  real_events_per_mass: 10000
+  validation_fraction: 0.2
+
+experiments:
+  jes_template_shifts: [-0.10, 0.0, 0.10]
+  jet_energy_scale:
+    parent_mass_gev: 500.0
+    real_shifts: [-0.10, -0.05, 0.0, 0.05, 0.10]
+  mass_jes_grid:
+    evaluation_jes_shifts: [-0.10, 0.0, 0.10]
+    benchmark_points:
+      - {mass_gev: 350.0, jes_shift: -0.05}
+      - {mass_gev: 500.0, jes_shift: 0.0}
+      - {mass_gev: 650.0, jes_shift: 0.05}
+
+physics:
+  parent_energy:
+    distribution: double_exponential
+    center_gev: 1000.0
+    scale_gev: 150.0
+  lepton_mass_gev: 0.0
+  neutrino_mass_gev: 0.0
+  lepton_relative_resolution: 0.02
+  met_resolution_gev: 15.0
+
+model:
+  hidden_dims: [128, 128]
+  time_embedding_dim: 16
+
+training:
+  device: auto
+  mixed_precision: none
+  batch_size: 512
+  profiler_epochs: 20
+  profiler_learning_rate: 0.001
+  flow_epochs: 30
+  flow_learning_rate: 0.001
+  weight_decay: 0.0001
+
+sampling:
+  ode_steps: 20
+  output_clip_sigma: 6.0
+
+dgpo:
+  iterations: 900
+  batch_size: 256
+  group_size: 4
+  condition_sampling: balanced
+  learning_rate: 0.0001
+  beta: 10.0
+  kl_beta: 0.01
+  minimum_timestep: 0.3
+  gradient_clip: 1.0
+  profile_mass_scale_gev: 25.0
+  log_every: 25
+
+evaluation:
+  batch_size: 1024
+  histogram_bins: 80
+  mass_range_gev: [0.0, 1200.0]
+
+figures:
+  style: nature
+  width_inches: 7.2
+  raster_dpi: 600
+  preview_dpi: 300
+  formats: [svg, pdf, tiff, png]
+  likelihood_masses_gev: [200.0, 350.0, 500.0, 650.0, 800.0]
+
+logging:
+  wandb:
+    enabled: false
+    mode: offline
+    project: sbi-reasoning
+    entity: null
+    group: mass-200-500-800
+    name: null
+    tags: [toy-model, dgpo, neutrino-reconstruction]
