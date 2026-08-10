@@ -651,6 +651,8 @@ def run_training(
         "loss": [],
         "reward_mean": [],
         "reward_spread": [],
+        "target_estimate_gev": [],
+        "candidate_estimate_mean_gev": [],
         "mass_gev": [],
     }
     print(
@@ -677,6 +679,8 @@ def run_training(
             condition_scaler,
             target_scaler,
             full_scaler,
+            template_masses,
+            profile_calibration,
             dgpo_config,
             config["sampling"],
             int(config["evaluation"]["batch_size"]),
@@ -689,7 +693,13 @@ def run_training(
             key: value.cpu() for key, value in policy.state_dict().items()
         }
         dgpo_scenario_seeds[float(mass)] = scenario_seed
-        for metric in ["loss", "reward_mean", "reward_spread"]:
+        for metric in [
+            "loss",
+            "reward_mean",
+            "reward_spread",
+            "target_estimate_gev",
+            "candidate_estimate_mean_gev",
+        ]:
             dgpo_history[metric].extend(scenario_history[metric])
         dgpo_history["mass_gev"].extend(
             [float(mass)] * len(scenario_history["loss"])

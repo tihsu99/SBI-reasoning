@@ -294,11 +294,6 @@ def predict_log_probabilities(
     return np.concatenate(chunks, axis=0)
 
 
-def normalized_profile(log_probabilities: torch.Tensor) -> torch.Tensor:
-    profile = log_probabilities.mean(dim=0)
-    return profile - profile.max()
-
-
 def profile_mass_vertex(profile: torch.Tensor, template_masses: list[float]) -> float:
     masses = np.asarray(template_masses, dtype=np.float64)
     values = profile.detach().cpu().numpy().astype(np.float64)
@@ -307,6 +302,21 @@ def profile_mass_vertex(profile: torch.Tensor, template_masses: list[float]) -> 
     if quadratic <= 0.0:
         return float(masses[np.argmin(negative_two_delta_log_likelihood)])
     return float(np.clip(-linear / (2.0 * quadratic), masses.min(), masses.max()))
+
+
+def calibrate_profile_estimate(
+    estimate_gev: float,
+    calibration: dict[str, list[float]] | None,
+) -> float:
+    if calibration is None:
+        return estimate_gev
+    return float(
+        np.interp(
+            estimate_gev,
+            np.asarray(calibration["raw_mass_gev"], dtype=np.float64),
+            np.asarray(calibration["calibrated_mass_gev"], dtype=np.float64),
+        )
+    )
 
 
 def dgpo_group_loss(
@@ -321,14 +331,14 @@ def dgpo_group_loss(
     return -F.logsigmoid(preference_logit)
 
 
-def profile_alignment_reward(
-    candidate_profile: torch.Tensor,
-    target_profile: torch.Tensor,
-    scale: float,
-) -> torch.Tensor:
-    if scale <= 0.0:
-        raise ValueError("Profile score scale must be positive")
-    return -torch.mean(((candidate_profile - target_profile) / scale) ** 2)
+def profile_estimator_reward(
+    candidate_estimate_gev: float,
+    target_estimate_gev: float,
+    scale_gev: float,
+) -> float:
+    if scale_gev <= 0.0:
+        raise ValueError("Profile estimator scale must be positive")
+    return -((candidate_estimate_gev - target_estimate_gev) / scale_gev) ** 2
 
 
 def train_dgpo(
@@ -340,6 +350,8 @@ def train_dgpo(
     condition_scaler: Standardizer,
     target_scaler: Standardizer,
     full_scaler: Standardizer,
+    template_masses: list[float],
+    profile_calibration: dict[str, dict[str, list[float]]],
     dgpo_config: dict[str, Any],
     sampling_config: dict[str, Any],
     evaluation_batch_size: int,
@@ -360,14 +372,21 @@ def train_dgpo(
         "cuda", enabled=device.type == "cuda" and mixed_precision == "fp16"
     )
 
-    target_profiles: dict[float, torch.Tensor] = {}
+    observed_calibration = profile_calibration.get("observable")
+    full_calibration = profile_calibration.get("visible_plus_truth_invisible")
+    target_estimates: dict[float, float] = {}
     for mass, dataset in real_datasets.items():
         standardized = condition_scaler.transform(dataset["observables"])
         log_probabilities = predict_log_probabilities(
             observed_profiler, standardized, device, evaluation_batch_size
         )
-        target_profiles[mass] = normalized_profile(
-            torch.from_numpy(log_probabilities).to(device)
+        raw_estimate = profile_mass_vertex(
+            torch.from_numpy(log_probabilities).to(device).mean(dim=0),
+            template_masses,
+        )
+        target_estimates[mass] = calibrate_profile_estimate(
+            raw_estimate,
+            observed_calibration,
         )
 
     iterations = int(dgpo_config["iterations"])
@@ -375,8 +394,15 @@ def train_dgpo(
     group_size = int(dgpo_config["group_size"])
     ode_steps = int(sampling_config["ode_steps"])
     clip_sigma = float(sampling_config["output_clip_sigma"])
+    estimator_scale_gev = float(dgpo_config["profile_estimator_scale_gev"])
     masses = np.asarray(sorted(real_datasets), dtype=np.float64)
-    history = {"loss": [], "reward_mean": [], "reward_spread": []}
+    history = {
+        "loss": [],
+        "reward_mean": [],
+        "reward_spread": [],
+        "target_estimate_gev": [],
+        "candidate_estimate_mean_gev": [],
+    }
 
     for iteration in range(iterations):
         if str(dgpo_config["condition_sampling"]) == "balanced":
@@ -401,20 +427,30 @@ def train_dgpo(
                 candidate_standardized.cpu().numpy().reshape(group_size * batch_size, -1)
             ).reshape(group_size, batch_size, -1)
             rewards = []
+            candidate_estimates = []
             for group_index in range(group_size):
                 full_raw = np.concatenate(
                     [observations_raw, candidate_raw[group_index]], axis=1
                 )
                 full_features = torch.from_numpy(full_scaler.transform(full_raw)).to(device)
-                candidate_profile = normalized_profile(
-                    F.log_softmax(full_profiler(full_features), dim=1)
+                candidate_profile = F.log_softmax(
+                    full_profiler(full_features), dim=1
+                ).mean(dim=0)
+                raw_candidate_estimate = profile_mass_vertex(
+                    candidate_profile,
+                    template_masses,
                 )
+                candidate_estimate = calibrate_profile_estimate(
+                    raw_candidate_estimate,
+                    full_calibration,
+                )
+                candidate_estimates.append(candidate_estimate)
                 rewards.append(
-                    profile_alignment_reward(
-                        candidate_profile,
-                        target_profiles[mass],
-                        float(dgpo_config["profile_score_scale"]),
-                    ).item()
+                    profile_estimator_reward(
+                        candidate_estimate,
+                        target_estimates[mass],
+                        estimator_scale_gev,
+                    )
                 )
             rewards_tensor = torch.tensor(rewards, device=device, dtype=conditions.dtype)
             reward_std = rewards_tensor.std(unbiased=False)
@@ -462,12 +498,22 @@ def train_dgpo(
         history["loss"].append(float(loss.detach().cpu()))
         history["reward_mean"].append(float(rewards_tensor.mean().cpu()))
         history["reward_spread"].append(float(reward_std.cpu()))
+        history["target_estimate_gev"].append(target_estimates[mass])
+        history["candidate_estimate_mean_gev"].append(
+            float(np.mean(candidate_estimates))
+        )
         if metric_logger is not None:
             metric_logger(
                 {
                     "train/dgpo/loss": history["loss"][-1],
                     "train/dgpo/reward_mean": history["reward_mean"][-1],
                     "train/dgpo/reward_spread": history["reward_spread"][-1],
+                    "train/dgpo/target_estimate_gev": history[
+                        "target_estimate_gev"
+                    ][-1],
+                    "train/dgpo/candidate_estimate_mean_gev": history[
+                        "candidate_estimate_mean_gev"
+                    ][-1],
                     "train/dgpo/iteration": float(iteration + 1),
                     "train/dgpo/mass_gev": mass,
                 }
@@ -477,7 +523,9 @@ def train_dgpo(
                 f"[dgpo] iteration {iteration + 1:04d}/{iterations:04d} mass={mass:.1f} "
                 f"loss={history['loss'][-1]:.4f} "
                 f"reward={history['reward_mean'][-1]:.4f} "
-                f"spread={history['reward_spread'][-1]:.4f}",
+                f"spread={history['reward_spread'][-1]:.4f} "
+                f"target={history['target_estimate_gev'][-1]:.1f} GeV "
+                f"candidate={history['candidate_estimate_mean_gev'][-1]:.1f} GeV",
                 flush=True,
             )
     return history

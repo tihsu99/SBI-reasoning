@@ -63,7 +63,7 @@ dgpo:
   kl_beta: 0.01
   minimum_timestep: 0.3
   gradient_clip: 1.0
-  profile_score_scale: 1.0
+  profile_estimator_scale_gev: 200.0
   log_every: 25
 
 evaluation:
