@@ -6,7 +6,7 @@ This repository contains a compact demonstration of data-profile-guided conditio
 2. a second discriminator profiles the mass using observables plus a proposed neutrino reconstruction;
 3. Direct Group Preference Optimization (DGPO) fine-tunes a conditional rectified-flow model so the reconstructed and observed profiles agree.
 
-The DGPO adaptation follows [Luo, Hu, and Tang, *Reinforcing Diffusion Models by Direct Group Preference Optimization*](https://arxiv.org/abs/2510.08425) and its [official implementation](https://github.com/Luo-Yihong/DGPO). The toy keeps deterministic ODE rollouts, group-normalized advantages, shared forward-process noise within each group, a frozen reference model, a minimum training timestep, and the group DSM objective.
+The DGPO adaptation follows [Luo, Hu, and Tang, *Reinforcing Diffusion Models by Direct Group Preference Optimization*](https://arxiv.org/abs/2510.08425) and its [official implementation](https://github.com/Luo-Yihong/DGPO). The toy keeps deterministic ODE rollouts, group-normalized advantages, shared forward-process noise within each group, a frozen reference model, a minimum training timestep, and the group DSM objective. Each pseudo-data mass independently fine-tunes a fresh copy of the same supervised-flow checkpoint. The preference reward compares the complete normalized observable and reconstructed profile vectors; it does not collapse either profile to a single fitted mass.
 
 ## Physics setup
 
@@ -42,11 +42,14 @@ Outputs are written under the configured `output_dir`:
 
 - `data/`: generated template and pseudo-data samples;
 - `dataset_truth_mass_sanity.*`: energy sampling, truth mass closure, oracle spectra, and peak closure;
-- `models.pt`: both discriminators, the pretrained flow, the DGPO flow, and scalers;
+- `models.pt`: both discriminators, the pretrained flow, one independent DGPO flow per pseudo-data mass, profile-calibration anchors, and scalers;
 - `training_history.*`: discriminator, flow, and DGPO monitoring;
 - `momentum_reconstruction_diagnostics.*`: truth-versus-reconstructed neutrino momentum and component-wise residual bias and resolution at the configured diagnostic mass;
 - `momentum_reconstruction_samples.csv` and `momentum_reconstruction_metrics.csv`: source data for the momentum diagnostic;
 - `sbi_likelihood_diagnostics.*`: visible versus visible-plus-truth-invisible mass profiles;
+- `profile_classifier_validation.csv`: held-out confusion matrices for both profilers;
+- `profile_calibration.csv`: held-out raw-to-calibrated profile-mass anchors;
+- `profile_quality_metrics.csv`: per-pseudo-data curvature, dynamic range, boundary status, and calibrated bias;
 - `jes_likelihood_diagnostics.*`: visible versus visible-plus-truth-invisible JES profiles;
 - `mass_jes_likelihood_grid.*`: two-dimensional likelihood-score surfaces;
 - `mass_jes_profile_scatter.*`: truth versus profiled mass; hue identifies the method, light-to-dark shade identifies truth JES, and marker size identifies truth mass in the reciprocal JES panel;
@@ -55,7 +58,7 @@ Outputs are written under the configured `output_dir`:
 - `reconstructed_mass_spectra.*` and `final_benchmark.*`: final reconstruction benchmarks;
 - CSV files beside every diagnostic figure and `summary.json`: source data and aggregate metrics.
 
-Publication figures use a compact Nature-style visual contract and are exported as editable SVG, PDF, 600 dpi TIFF, and preview PNG in the full configurations. The plotted likelihood diagnostic is the classifier-based mean event log-score, labelled as `-2 Delta <log p>`; the three template evaluations are shown explicitly and the continuous curves are quadratic interpolation.
+Publication figures use a compact Nature-style visual contract and are exported as editable SVG, PDF, 600 dpi TIFF, and preview PNG in the full configurations. The plotted likelihood diagnostic is the classifier-based mean event log-score, labelled as `-2 Delta <log p>`; the three template evaluations are shown explicitly and the continuous curves are quadratic interpolation. Profile vertices are calibrated only with held-out simulated template samples; raw and calibrated estimates are both retained in the CSV output. Invalid non-monotonic anchors or near-random profiler accuracy stop formal training before DGPO.
 
 The exact figure contract, statistical definitions, and current validation boundary are recorded in `FIGURE_QA.md`. A single configured seed and an 80/20 train/validation split are used by default; the code does not claim multi-seed confidence intervals. Peak error bars show the fitted event-level mass resolution, not uncertainty on the fitted mean.
 

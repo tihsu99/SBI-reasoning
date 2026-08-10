@@ -321,6 +321,16 @@ def dgpo_group_loss(
     return -F.logsigmoid(preference_logit)
 
 
+def profile_alignment_reward(
+    candidate_profile: torch.Tensor,
+    target_profile: torch.Tensor,
+    scale: float,
+) -> torch.Tensor:
+    if scale <= 0.0:
+        raise ValueError("Profile score scale must be positive")
+    return -torch.mean(((candidate_profile - target_profile) / scale) ** 2)
+
+
 def train_dgpo(
     policy: ConditionalFlow,
     reference: ConditionalFlow,
@@ -330,7 +340,6 @@ def train_dgpo(
     condition_scaler: Standardizer,
     target_scaler: Standardizer,
     full_scaler: Standardizer,
-    template_masses: list[float],
     dgpo_config: dict[str, Any],
     sampling_config: dict[str, Any],
     evaluation_batch_size: int,
@@ -351,14 +360,15 @@ def train_dgpo(
         "cuda", enabled=device.type == "cuda" and mixed_precision == "fp16"
     )
 
-    target_profile_masses: dict[float, float] = {}
+    target_profiles: dict[float, torch.Tensor] = {}
     for mass, dataset in real_datasets.items():
         standardized = condition_scaler.transform(dataset["observables"])
         log_probabilities = predict_log_probabilities(
             observed_profiler, standardized, device, evaluation_batch_size
         )
-        target_profile = torch.from_numpy(log_probabilities).to(device).mean(dim=0)
-        target_profile_masses[mass] = profile_mass_vertex(target_profile, template_masses)
+        target_profiles[mass] = normalized_profile(
+            torch.from_numpy(log_probabilities).to(device)
+        )
 
     iterations = int(dgpo_config["iterations"])
     batch_size = int(dgpo_config["batch_size"])
@@ -399,11 +409,13 @@ def train_dgpo(
                 candidate_profile = normalized_profile(
                     F.log_softmax(full_profiler(full_features), dim=1)
                 )
-                candidate_mass = profile_mass_vertex(candidate_profile, template_masses)
-                profile_difference = (
-                    candidate_mass - target_profile_masses[mass]
-                ) / float(dgpo_config["profile_mass_scale_gev"])
-                rewards.append(-(profile_difference**2))
+                rewards.append(
+                    profile_alignment_reward(
+                        candidate_profile,
+                        target_profiles[mass],
+                        float(dgpo_config["profile_score_scale"]),
+                    ).item()
+                )
             rewards_tensor = torch.tensor(rewards, device=device, dtype=conditions.dtype)
             reward_std = rewards_tensor.std(unbiased=False)
             advantages = (rewards_tensor - rewards_tensor.mean()) / (reward_std + 1e-6)

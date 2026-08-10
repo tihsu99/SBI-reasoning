@@ -53,7 +53,8 @@ sampling:
   output_clip_sigma: 6.0
 
 dgpo:
-  iterations: 10000
+  scope: independent_per_pseudo_data
+  iterations_per_pseudo_data: 400
   batch_size: 512
   group_size: 4
   condition_sampling: balanced
@@ -62,13 +63,15 @@ dgpo:
   kl_beta: 0.01
   minimum_timestep: 0.3
   gradient_clip: 1.0
-  profile_mass_scale_gev: 50.0
+  profile_score_scale: 1.0
   log_every: 25
 
 evaluation:
   batch_size: 4096
   histogram_bins: 100
   mass_range_gev: [0.0, 1200.0]
+  profile_minimum_accuracy_above_chance: 0.05
+  profile_fail_on_invalid: true
 
 figures:
   style: nature

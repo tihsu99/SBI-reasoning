@@ -326,12 +326,41 @@ def plot_training_history(
     axes[1, 0].plot(flow_history, color=COLORS["light_blue"])
     axes[1, 0].set(ylabel="Flow-matching loss", xlabel="Epoch")
     rewards = np.asarray(dgpo_history["reward_mean"], dtype=np.float64)
-    axes[1, 1].plot(rewards, color=COLORS["red"], alpha=0.2, linewidth=0.7)
-    window = max(1, len(rewards) // 40)
-    if window > 1:
-        smoothed = np.convolve(rewards, np.ones(window) / window, mode="valid")
-        axes[1, 1].plot(np.arange(window - 1, len(rewards)), smoothed, color=COLORS["red"])
-    axes[1, 1].set(ylabel="DGPO profile reward", xlabel="Iteration")
+    scenario_masses = np.asarray(
+        dgpo_history.get("mass_gev", np.zeros(len(rewards))), dtype=np.float64
+    )
+    unique_masses = list(dict.fromkeys(scenario_masses.tolist()))
+    for scenario_index, mass in enumerate(unique_masses):
+        indices = np.flatnonzero(scenario_masses == mass)
+        axes[1, 1].plot(
+            indices,
+            rewards[indices],
+            color=COLORS["red"],
+            alpha=0.75,
+            linewidth=0.9,
+        )
+        if scenario_index > 0:
+            axes[1, 1].axvline(
+                indices[0] - 0.5,
+                color=COLORS["light"],
+                linewidth=0.7,
+            )
+        label_stride = max(1, int(np.ceil(len(unique_masses) / 9)))
+        if scenario_index % label_stride == 0:
+            axes[1, 1].text(
+                float(indices.mean()),
+                0.98,
+                f"{mass:g}",
+                transform=axes[1, 1].get_xaxis_transform(),
+                ha="center",
+                va="top",
+                fontsize=5.5,
+            )
+    axes[1, 1].set(
+        ylabel="DGPO profile reward",
+        xlabel="Independent DGPO iteration",
+        title="Pseudo-data mass (GeV)",
+    )
     _clean_axes(axes)
     _panel_labels(axes)
     figure.subplots_adjust(left=0.09, right=0.98, bottom=0.11, top=0.90, wspace=0.32, hspace=0.38)
@@ -393,6 +422,13 @@ def plot_sbi_likelihood_diagnostics(
         color=COLORS["red"],
         label="Visible + truth invisible",
     )
+    accuracy_axis.axhline(
+        1.0 / len(template_masses),
+        color=COLORS["dark"],
+        linestyle="--",
+        linewidth=0.8,
+        label="Random classifier",
+    )
     accuracy_axis.set(xlabel="Epoch", ylabel="Validation accuracy", ylim=(0.0, 1.02))
 
     truth = np.asarray([row["truth_mass_gev"] for row in profile_rows])
@@ -403,7 +439,12 @@ def plot_sbi_likelihood_diagnostics(
     padding = 0.05 * (max(template_masses) - min(template_masses))
     limits = (min(template_masses) - padding, max(template_masses) + padding)
     estimate_axis.plot(limits, limits, color=COLORS["dark"], linestyle="--", linewidth=1.0)
-    estimate_axis.set(xlim=limits, ylim=limits, xlabel="Truth parent mass (GeV)", ylabel="Profile estimate (GeV)")
+    estimate_axis.set(
+        xlim=limits,
+        ylim=limits,
+        xlabel="Truth parent mass (GeV)",
+        ylabel="Calibrated profile estimate (GeV)",
+    )
 
     template_array = np.asarray(template_masses, dtype=np.float64)
     csv_rows: list[dict[str, float | str]] = []
@@ -414,7 +455,14 @@ def plot_sbi_likelihood_diagnostics(
         ]:
             values = profiles[mass][method]
             dense_mass, dense_values = _quadratic_curve(template_array, values)
-            axis.plot(dense_mass, dense_values, color=color, label=label if index == 0 else None)
+            curvature = float(np.polyfit(template_array, values, 2)[0])
+            axis.plot(
+                dense_mass,
+                dense_values,
+                color=color,
+                linestyle="-" if curvature > 0.0 else ":",
+                label=label if index == 0 else None,
+            )
             axis.plot(template_array, values, linestyle="none", marker="o", markersize=2.5, color=color)
             for template_mass, value in zip(template_array, values):
                 csv_rows.append(
@@ -438,12 +486,12 @@ def plot_sbi_likelihood_diagnostics(
         method_labels,
         loc="upper center",
         bbox_to_anchor=(0.5, 1.01),
-        ncol=2,
+        ncol=3,
     )
     figure.text(
         0.99,
         0.02,
-        "Markers: evaluated templates; curves: quadratic interpolation",
+        "Markers: templates; solid/dotted curves: convex/non-convex quadratic interpolation",
         ha="right",
         fontsize=6.5,
     )
@@ -1337,7 +1385,12 @@ def plot_final_benchmark(
     profile_axis.plot(truth, [row["sft_full_profile_mass_gev"] for row in profile_rows], color=COLORS["light_blue"], marker="o", markersize=2.0, label="SFT full")
     profile_axis.plot(truth, [row["dgpo_full_profile_mass_gev"] for row in profile_rows], color=COLORS["red"], marker="o", markersize=2.0, label="DGPO full")
     profile_axis.plot(limits, limits, color=COLORS["dark"], linestyle="--", linewidth=0.9)
-    profile_axis.set(xlabel="Truth mass (GeV)", ylabel="Profile estimate (GeV)", xlim=limits, ylim=limits)
+    profile_axis.set(
+        xlabel="Truth mass (GeV)",
+        ylabel="Calibrated profile estimate (GeV)",
+        xlim=limits,
+        ylim=limits,
+    )
     profile_axis.legend(loc="upper left")
     peak_axis.text(
         0.99,

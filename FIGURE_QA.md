@@ -29,6 +29,9 @@ Archetype: quantitative grid. For the mass-only early trial, `momentum_reconstru
 - Randomness: one configured random seed per run; no multi-seed or fold uncertainty is claimed.
 - Classifier metric: validation classification accuracy.
 - Likelihood diagnostic: `-2 Delta <log p>`, the relative mean classifier log-score. Markers are the evaluated templates; curves are quadratic interpolation.
+- Profile validation: the accuracy panel includes the random-classifier baseline; dotted interpolation denotes non-convex curvature. Held-out confusion matrices, calibration anchors, score dynamic range, curvature, and boundary saturation are exported as CSV.
+- Profile calibration: observable and full vertices use separate monotonic mappings derived only from held-out simulated templates. Raw vertices remain in source data, and pseudo-data truth is never used for calibration or DGPO reward.
+- DGPO independence: every nominal pseudo-data mass starts from the same frozen supervised-flow checkpoint and produces a separate model. The reward is the negative mean-squared distance between complete normalized profile vectors.
 - Reconstructed peak: Gaussian-plus-offset fit; fallback is the median if the fit fails.
 - Resolution: fitted Gaussian sigma, or central 68% half-width for the fallback. It is not a confidence interval on the peak.
 - Bias: fitted reconstructed peak minus truth parent mass.
@@ -39,7 +42,7 @@ Archetype: quantitative grid. For the mass-only early trial, `momentum_reconstru
 
 ## Validation status
 
-- Unit tests cover two-body mass closure, truncated double-exponential energy sampling, JES-to-MET propagation, and the DGPO gradient direction.
+- Unit tests cover two-body mass closure, truncated double-exponential energy and momentum sampling, JES-to-MET propagation, experiment-mode validation, and the DGPO gradient direction.
 - The complete smoke configuration has passed all stages and rendered every figure.
 - A separate mass-only smoke integration has passed generation, training, evaluation, and momentum-figure rendering without creating JES or mass x JES datasets.
 - Smoke outputs validate integration and layout only; they are not physics results because the smoke run uses 256 template events and two training epochs.

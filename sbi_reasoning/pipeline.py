@@ -424,6 +424,100 @@ def run_training(
         "full-profiler",
         metric_logger,
     )
+    classifier_validation_rows: list[dict[str, float | str]] = []
+    profile_calibration: dict[str, dict[str, list[float]]] = {}
+    for profiler_name, profiler, features in [
+        ("observable", observed_profiler, validation_conditions),
+        ("visible_plus_truth_invisible", full_profiler, full_validation),
+    ]:
+        log_probabilities = predict_log_probabilities(
+            profiler,
+            features,
+            device,
+            int(config["evaluation"]["batch_size"]),
+        )
+        predictions = log_probabilities.argmax(axis=1)
+        raw_anchor_masses = []
+        for truth_index, truth_mass in enumerate(template_masses):
+            selected = validation["labels"] == truth_index
+            raw_anchor_masses.append(
+                profile_mass_estimate(
+                    log_probabilities[selected], template_masses
+                )[0]
+            )
+            for prediction_index, prediction_mass in enumerate(template_masses):
+                count = int(np.sum(predictions[selected] == prediction_index))
+                classifier_validation_rows.append(
+                    {
+                        "profiler": profiler_name,
+                        "truth_mass_gev": truth_mass,
+                        "predicted_mass_gev": prediction_mass,
+                        "event_count": count,
+                        "fraction": count / max(int(np.sum(selected)), 1),
+                    }
+                )
+        if np.all(np.diff(raw_anchor_masses) > 0.0):
+            profile_calibration[profiler_name] = {
+                "raw_mass_gev": [float(value) for value in raw_anchor_masses],
+                "calibrated_mass_gev": template_masses,
+            }
+        else:
+            message = (
+                f"Cannot calibrate non-monotonic {profiler_name} profile anchors: "
+                f"{raw_anchor_masses}"
+            )
+            if bool(config["evaluation"].get("profile_fail_on_invalid", True)):
+                raise RuntimeError(message)
+            print(f"[profile-warning] {message}", flush=True)
+    with (output_dir / "profile_classifier_validation.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as stream:
+        writer = csv.DictWriter(
+            stream, fieldnames=list(classifier_validation_rows[0])
+        )
+        writer.writeheader()
+        writer.writerows(classifier_validation_rows)
+    calibration_rows = [
+        {
+            "profiler": profiler_name,
+            "raw_profile_mass_gev": raw_mass,
+            "calibrated_mass_gev": calibrated_mass,
+        }
+        for profiler_name, calibration in profile_calibration.items()
+        for raw_mass, calibrated_mass in zip(
+            calibration["raw_mass_gev"], calibration["calibrated_mass_gev"]
+        )
+    ]
+    with (output_dir / "profile_calibration.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as stream:
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=[
+                "profiler",
+                "raw_profile_mass_gev",
+                "calibrated_mass_gev",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(calibration_rows)
+    chance_accuracy = 1.0 / len(template_masses)
+    minimum_margin = float(
+        config["evaluation"].get("profile_minimum_accuracy_above_chance", 0.05)
+    )
+    for name, history in [
+        ("observable", observed_history),
+        ("visible+truth-invisible", full_history),
+    ]:
+        final_accuracy = float(history["validation_accuracy"][-1])
+        if final_accuracy < chance_accuracy + minimum_margin:
+            message = (
+                f"{name} validation accuracy={final_accuracy:.3f} is below "
+                f"chance+margin={chance_accuracy + minimum_margin:.3f}"
+            )
+            if bool(config["evaluation"].get("profile_fail_on_invalid", True)):
+                raise RuntimeError(message)
+            print(f"[profile-warning] {message}", flush=True)
 
     hypothesis_grid = None
     hypothesis_histories: dict[str, dict[str, list[float]]] = {}
@@ -532,25 +626,53 @@ def run_training(
     )
     sft_state = copy.deepcopy(flow.state_dict())
     reference = copy.deepcopy(flow)
-    print("[train] starting online DGPO preference fine-tuning", flush=True)
-    dgpo_history = train_dgpo(
-        flow,
-        reference,
-        observed_profiler,
-        full_profiler,
-        real_datasets,
-        condition_scaler,
-        target_scaler,
-        full_scaler,
-        template_masses,
-        config["dgpo"],
-        config["sampling"],
-        int(config["evaluation"]["batch_size"]),
-        device,
-        np_rng,
-        str(config["training"].get("mixed_precision", "none")),
-        metric_logger,
+    if config["dgpo"].get("scope") != "independent_per_pseudo_data":
+        raise ValueError(
+            "dgpo.scope must be independent_per_pseudo_data"
+        )
+    iterations_per_pseudo_data = int(
+        config["dgpo"]["iterations_per_pseudo_data"]
     )
+    dgpo_config = {**config["dgpo"], "iterations": iterations_per_pseudo_data}
+    dgpo_states: dict[float, dict[str, torch.Tensor]] = {}
+    dgpo_history: dict[str, list[float]] = {
+        "loss": [],
+        "reward_mean": [],
+        "reward_spread": [],
+        "mass_gev": [],
+    }
+    print(
+        "[train] starting independent DGPO fine-tuning for each pseudo-data mass",
+        flush=True,
+    )
+    for mass, dataset in sorted(real_datasets.items()):
+        print(f"[train] DGPO pseudo-data mass={mass:g} GeV", flush=True)
+        policy = copy.deepcopy(reference)
+        scenario_history = train_dgpo(
+            policy,
+            reference,
+            observed_profiler,
+            full_profiler,
+            {mass: dataset},
+            condition_scaler,
+            target_scaler,
+            full_scaler,
+            dgpo_config,
+            config["sampling"],
+            int(config["evaluation"]["batch_size"]),
+            device,
+            np_rng,
+            str(config["training"].get("mixed_precision", "none")),
+            metric_logger,
+        )
+        dgpo_states[float(mass)] = {
+            key: value.cpu() for key, value in policy.state_dict().items()
+        }
+        for metric in ["loss", "reward_mean", "reward_spread"]:
+            dgpo_history[metric].extend(scenario_history[metric])
+        dgpo_history["mass_gev"].extend(
+            [float(mass)] * len(scenario_history["loss"])
+        )
 
     checkpoint = {
         "template_masses": template_masses,
@@ -562,7 +684,9 @@ def run_training(
         "observed_profiler_state": observed_profiler.cpu().state_dict(),
         "full_profiler_state": full_profiler.cpu().state_dict(),
         "flow_sft_state": {key: value.cpu() for key, value in sft_state.items()},
-        "flow_dgpo_state": flow.cpu().state_dict(),
+        "flow_dgpo_states": dgpo_states,
+        "dgpo_scope": "independent_per_pseudo_data",
+        "profile_calibration": profile_calibration,
         "history": {
             "observed_profiler": observed_history,
             "full_profiler": full_history,
@@ -606,7 +730,9 @@ def run_training(
 
 
 def profile_mass_estimate(
-    log_probabilities: np.ndarray, template_masses: list[float]
+    log_probabilities: np.ndarray,
+    template_masses: list[float],
+    calibration: dict[str, list[float]] | None = None,
 ) -> tuple[float, float]:
     masses = np.asarray(template_masses, dtype=np.float64)
     profile = log_probabilities.mean(axis=0, dtype=np.float64)
@@ -614,10 +740,55 @@ def profile_mass_estimate(
     quadratic, linear, _ = np.polyfit(masses, negative_two_delta_log_likelihood, 2)
     if quadratic <= 0.0:
         estimate = float(masses[np.argmin(negative_two_delta_log_likelihood)])
-        return estimate, float("nan")
-    estimate = float(np.clip(-linear / (2.0 * quadratic), masses.min(), masses.max()))
-    uncertainty = float(1.0 / np.sqrt(quadratic * len(log_probabilities)))
+        uncertainty = float("nan")
+    else:
+        estimate = float(
+            np.clip(-linear / (2.0 * quadratic), masses.min(), masses.max())
+        )
+        uncertainty = float(1.0 / np.sqrt(quadratic * len(log_probabilities)))
+    if calibration is not None:
+        raw_anchors = np.asarray(calibration["raw_mass_gev"], dtype=np.float64)
+        calibrated_anchors = np.asarray(
+            calibration["calibrated_mass_gev"], dtype=np.float64
+        )
+        segment = int(
+            np.clip(np.searchsorted(raw_anchors, estimate) - 1, 0, len(raw_anchors) - 2)
+        )
+        slope = (
+            calibrated_anchors[segment + 1] - calibrated_anchors[segment]
+        ) / (raw_anchors[segment + 1] - raw_anchors[segment])
+        estimate = float(np.interp(estimate, raw_anchors, calibrated_anchors))
+        uncertainty *= abs(float(slope))
     return estimate, uncertainty
+
+
+def profile_quality_metrics(
+    log_probabilities: np.ndarray,
+    template_masses: list[float],
+    truth_mass_gev: float,
+    profile_name: str,
+    calibration: dict[str, list[float]] | None = None,
+) -> dict[str, float | str]:
+    masses = np.asarray(template_masses, dtype=np.float64)
+    scores = negative_two_delta_mean_log_score(log_probabilities)
+    quadratic, _, _ = np.polyfit(masses, scores, 2)
+    estimate, uncertainty = profile_mass_estimate(
+        log_probabilities, template_masses, calibration
+    )
+    boundary = np.isclose(estimate, masses.min()) or np.isclose(
+        estimate, masses.max()
+    )
+    return {
+        "profile": profile_name,
+        "truth_mass_gev": truth_mass_gev,
+        "estimated_mass_gev": estimate,
+        "bias_gev": estimate - truth_mass_gev,
+        "uncertainty_gev": uncertainty,
+        "quadratic_curvature_per_gev2": float(quadratic),
+        "score_dynamic_range": float(scores.max() - scores.min()),
+        "convex": float(quadratic > 0.0),
+        "boundary_estimate": float(boundary),
+    }
 
 
 def negative_two_delta_mean_log_score(log_probabilities: np.ndarray) -> np.ndarray:
@@ -659,7 +830,7 @@ def _load_models(
     TemplateDiscriminator,
     TemplateDiscriminator,
     ConditionalFlow,
-    ConditionalFlow,
+    dict[float, ConditionalFlow],
 ]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     condition_scaler = Standardizer.from_dict(checkpoint["condition_scaler"])
@@ -680,9 +851,18 @@ def _load_models(
         "time_embedding_dim": checkpoint["time_embedding_dim"],
     }
     sft_flow = ConditionalFlow(**architecture)
-    dgpo_flow = ConditionalFlow(**architecture)
     sft_flow.load_state_dict(checkpoint["flow_sft_state"])
-    dgpo_flow.load_state_dict(checkpoint["flow_dgpo_state"])
+    dgpo_flows: dict[float, ConditionalFlow] = {}
+    if "flow_dgpo_states" in checkpoint:
+        for mass, state in checkpoint["flow_dgpo_states"].items():
+            model = ConditionalFlow(**architecture)
+            model.load_state_dict(state)
+            dgpo_flows[float(mass)] = model.to(device).eval()
+    else:
+        raise RuntimeError(
+            "Checkpoint contains the obsolete shared DGPO model; rerun training "
+            "to create one flow_dgpo_states entry per pseudo-data mass"
+        )
     return (
         checkpoint,
         condition_scaler,
@@ -691,7 +871,19 @@ def _load_models(
         observed_profiler.to(device).eval(),
         full_profiler.to(device).eval(),
         sft_flow.to(device).eval(),
-        dgpo_flow.to(device).eval(),
+        dgpo_flows,
+    )
+
+
+def _dgpo_flow_for_mass(
+    flows: dict[float, ConditionalFlow], mass: float
+) -> ConditionalFlow:
+    if mass in flows:
+        return flows[mass]
+    available = sorted(flows)
+    raise KeyError(
+        f"No independent DGPO checkpoint for {mass:g} GeV; "
+        f"available masses are {available}"
     )
 
 
@@ -772,8 +964,11 @@ def run_evaluation(
         observed_profiler,
         full_profiler,
         sft_flow,
-        dgpo_flow,
+        dgpo_flows,
     ) = _load_models(checkpoint_path, device)
+    calibrations = checkpoint.get("profile_calibration", {})
+    observed_calibration = calibrations.get("observable")
+    full_calibration = calibrations.get("visible_plus_truth_invisible")
     real_masses = expand_mass_grid(config["data"]["real_masses_gev"])
     real_datasets = _load_all_datasets(output_dir, "real", real_masses)
     batch_size = int(config["evaluation"]["batch_size"])
@@ -785,6 +980,7 @@ def run_evaluation(
     spectra: dict[float, dict[str, np.ndarray]] = {}
     profile_rows = []
     likelihood_profiles: dict[float, dict[str, np.ndarray]] = {}
+    profile_quality_rows: list[dict[str, float | str]] = []
     momentum_diagnostic: dict[str, np.ndarray] | None = None
     momentum_diagnostic_mass = float(
         config["figures"]["momentum_diagnostic_mass_gev"]
@@ -804,7 +1000,7 @@ def run_evaluation(
             initial_noise,
         )
         dgpo_target = _sample_dataset(
-            dgpo_flow,
+            _dgpo_flow_for_mass(dgpo_flows, mass),
             conditions,
             target_scaler,
             config["sampling"],
@@ -844,8 +1040,13 @@ def run_evaluation(
         observed_log_probabilities = predict_log_probabilities(
             observed_profiler, conditions, device, batch_size
         )
-        observed_mass, observed_uncertainty = profile_mass_estimate(
+        raw_observed_mass, _ = profile_mass_estimate(
             observed_log_probabilities, checkpoint["template_masses"]
+        )
+        observed_mass, observed_uncertainty = profile_mass_estimate(
+            observed_log_probabilities,
+            checkpoint["template_masses"],
+            observed_calibration,
         )
         truth_full_features = full_scaler.transform(
             np.concatenate(
@@ -855,8 +1056,13 @@ def run_evaluation(
         truth_full_log_probabilities = predict_log_probabilities(
             full_profiler, truth_full_features, device, batch_size
         )
-        truth_full_mass, truth_full_uncertainty = profile_mass_estimate(
+        raw_truth_full_mass, _ = profile_mass_estimate(
             truth_full_log_probabilities, checkpoint["template_masses"]
+        )
+        truth_full_mass, truth_full_uncertainty = profile_mass_estimate(
+            truth_full_log_probabilities,
+            checkpoint["template_masses"],
+            full_calibration,
         )
         likelihood_profiles[mass] = {
             "visible": negative_two_delta_mean_log_score(
@@ -866,7 +1072,26 @@ def run_evaluation(
                 truth_full_log_probabilities
             ),
         }
+        profile_quality_rows.extend(
+            [
+                profile_quality_metrics(
+                    observed_log_probabilities,
+                    checkpoint["template_masses"],
+                    mass,
+                    "observable",
+                    observed_calibration,
+                ),
+                profile_quality_metrics(
+                    truth_full_log_probabilities,
+                    checkpoint["template_masses"],
+                    mass,
+                    "visible_plus_truth_invisible",
+                    full_calibration,
+                ),
+            ]
+        )
         full_profile_results = {}
+        raw_full_profile_results = {}
         for method, target in [("sft", sft_target), ("dgpo", dgpo_target)]:
             full_features = full_scaler.transform(
                 np.concatenate([dataset["observables"], target], axis=1)
@@ -874,18 +1099,36 @@ def run_evaluation(
             full_log_probabilities = predict_log_probabilities(
                 full_profiler, full_features, device, batch_size
             )
-            full_profile_results[method] = profile_mass_estimate(
+            raw_full_profile_results[method] = profile_mass_estimate(
                 full_log_probabilities, checkpoint["template_masses"]
+            )[0]
+            full_profile_results[method] = profile_mass_estimate(
+                full_log_probabilities,
+                checkpoint["template_masses"],
+                full_calibration,
+            )
+            profile_quality_rows.append(
+                profile_quality_metrics(
+                    full_log_probabilities,
+                    checkpoint["template_masses"],
+                    mass,
+                    method,
+                    full_calibration,
+                )
             )
         profile_rows.append(
             {
                 "truth_mass_gev": mass,
+                "raw_observed_profile_mass_gev": raw_observed_mass,
                 "observed_profile_mass_gev": observed_mass,
                 "observed_profile_uncertainty_gev": observed_uncertainty,
+                "raw_truth_full_profile_mass_gev": raw_truth_full_mass,
                 "truth_full_profile_mass_gev": truth_full_mass,
                 "truth_full_profile_uncertainty_gev": truth_full_uncertainty,
+                "raw_sft_full_profile_mass_gev": raw_full_profile_results["sft"],
                 "sft_full_profile_mass_gev": full_profile_results["sft"][0],
                 "sft_full_profile_uncertainty_gev": full_profile_results["sft"][1],
+                "raw_dgpo_full_profile_mass_gev": raw_full_profile_results["dgpo"],
                 "dgpo_full_profile_mass_gev": full_profile_results["dgpo"][0],
                 "dgpo_full_profile_uncertainty_gev": full_profile_results["dgpo"][1],
             }
@@ -906,6 +1149,41 @@ def run_evaluation(
         writer = csv.DictWriter(stream, fieldnames=list(profile_rows[0]))
         writer.writeheader()
         writer.writerows(profile_rows)
+    with (output_dir / "profile_quality_metrics.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(profile_quality_rows[0]))
+        writer.writeheader()
+        writer.writerows(profile_quality_rows)
+    interior_min = min(float(value) for value in checkpoint["template_masses"])
+    interior_max = max(float(value) for value in checkpoint["template_masses"])
+    observable_interior = [
+        row
+        for row in profile_quality_rows
+        if row["profile"] == "observable"
+        and interior_min < float(row["truth_mass_gev"]) < interior_max
+    ]
+    boundary_fraction = (
+        float(
+            np.mean(
+                [float(row["boundary_estimate"]) for row in observable_interior]
+            )
+        )
+        if observable_interior
+        else float("nan")
+    )
+    nonconvex_fraction = (
+        float(
+            np.mean([1.0 - float(row["convex"]) for row in observable_interior])
+        )
+        if observable_interior
+        else float("nan")
+    )
+    print(
+        f"[profile-check] observable interior boundary_fraction={boundary_fraction:.3f} "
+        f"nonconvex_fraction={nonconvex_fraction:.3f}",
+        flush=True,
+    )
     if momentum_diagnostic is None:
         raise ValueError(
             f"Momentum diagnostic mass {momentum_diagnostic_mass:g} GeV "
@@ -955,6 +1233,10 @@ def run_evaluation(
                     ]
                 )
             ),
+        }
+        summary["profile_quality"] = {
+            "observable_interior_boundary_fraction": boundary_fraction,
+            "observable_interior_nonconvex_fraction": nonconvex_fraction,
         }
         with (output_dir / "summary.json").open("w", encoding="utf-8") as stream:
             json.dump(summary, stream, indent=2)
@@ -1124,7 +1406,7 @@ def run_evaluation(
             initial_noise,
         )
         dgpo_target = _sample_dataset(
-            dgpo_flow,
+            _dgpo_flow_for_mass(dgpo_flows, truth_mass),
             nominal_conditions,
             target_scaler,
             config["sampling"],
@@ -1243,6 +1525,10 @@ def run_evaluation(
                 ]
             )
         ),
+    }
+    summary["profile_quality"] = {
+        "observable_interior_boundary_fraction": boundary_fraction,
+        "observable_interior_nonconvex_fraction": nonconvex_fraction,
     }
     with (output_dir / "summary.json").open("w", encoding="utf-8") as stream:
         json.dump(summary, stream, indent=2)
