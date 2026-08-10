@@ -38,6 +38,7 @@ from .plotting import (
     plot_mass_spectra,
     plot_momentum_reconstruction_diagnostics,
     plot_sbi_likelihood_diagnostics,
+    plot_sbi_input_distributions,
     plot_training_history,
 )
 from .tracking import ExperimentTracker
@@ -280,6 +281,10 @@ def run_generation(
         )
 
     _, figure_paths = plot_dataset_sanity(template_datasets, config, output_dir)
+    _, input_figure_paths = plot_sbi_input_distributions(
+        template_datasets, config, output_dir
+    )
+    figure_paths.extend(input_figure_paths)
     if tracker is not None:
         tracker.log_figures(figure_paths, "generation")
     print(f"[generate] finished in {time.perf_counter() - start_time:.1f} s", flush=True)

@@ -72,6 +72,8 @@ figures:
   likelihood_masses_gev: [400.0, 450.0, 500.0, 550.0, 600.0]
   momentum_diagnostic_mass_gev: 500.0
   momentum_scatter_points: 2000
+  sbi_input_histogram_bins: 60
+  sbi_input_quantile_range: [0.005, 0.995]
 
 logging:
   wandb:

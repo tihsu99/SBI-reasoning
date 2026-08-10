@@ -4,6 +4,8 @@
 
 Core claim: the generator closes at truth level, visible-plus-invisible information sharpens the classifier profile, and DGPO can be benchmarked by mass bias, resolution, and profile alignment under nominal and JES-shifted detector response.
 
+The low-level input grid separately checks that the mass hypotheses induce visible shape changes in exactly the ten raw variables supplied to the SBI models. All hypotheses use common bin edges and are normalized to probability density; the accompanying CSV retains counts and densities for every bin.
+
 Early-trial generator claim: direct parent-momentum sampling produces the configured mass-independent double-exponential spectrum while preserving the parent mass shell and two-body truth closure for the 400, 500, and 600 GeV templates.
 
 Archetype: quantitative grid. For the mass-only early trial, `momentum_reconstruction_diagnostics` and `final_benchmark` are the hero figures. For the complete systematics workflow, `mass_jes_profile_scatter` and `mass_jes_reconstruction_heatmaps` are additional hero figures; generator and likelihood panels are diagnostics.

@@ -83,6 +83,8 @@ figures:
   momentum_diagnostic_mass_gev: 500.0
   momentum_scatter_points: 5000
   reconstruction_heatmap_methods: [baseline, sft, dgpo, oracle]
+  sbi_input_histogram_bins: 60
+  sbi_input_quantile_range: [0.005, 0.995]
 
 logging:
   wandb:

@@ -41,6 +41,19 @@ METHOD_LABELS = {
     "oracle": "Detector oracle",
 }
 
+OBSERVABLE_FEATURES = (
+    ("lepton_1_energy", r"Lepton 1 $E$ (GeV)"),
+    ("lepton_1_px", r"Lepton 1 $p_x$ (GeV)"),
+    ("lepton_1_py", r"Lepton 1 $p_y$ (GeV)"),
+    ("lepton_1_pz", r"Lepton 1 $p_z$ (GeV)"),
+    ("lepton_2_energy", r"Lepton 2 $E$ (GeV)"),
+    ("lepton_2_px", r"Lepton 2 $p_x$ (GeV)"),
+    ("lepton_2_py", r"Lepton 2 $p_y$ (GeV)"),
+    ("lepton_2_pz", r"Lepton 2 $p_z$ (GeV)"),
+    ("missing_px", r"Missing $p_x$ (GeV)"),
+    ("missing_py", r"Missing $p_y$ (GeV)"),
+)
+
 
 def _shade_color(
     base_color: str, value: float, minimum: float, maximum: float
@@ -295,6 +308,118 @@ def plot_dataset_sanity(
         figure, output_dir / "dataset_truth_mass_sanity", figure_config
     )
     _write_rows(output_dir / "dataset_sanity.csv", rows)
+    return rows, paths
+
+
+def plot_sbi_input_distributions(
+    datasets: dict[float, dict[str, np.ndarray]],
+    config: dict[str, Any],
+    output_dir: Path,
+) -> tuple[list[dict[str, Any]], list[Path]]:
+    """Plot the raw low-level variables used as SBI conditions."""
+    apply_nature_style()
+    figure_config = config["figures"]
+    width = float(figure_config.get("width_inches", 7.2))
+    figure, axes = plt.subplots(2, 5, figsize=(width, 0.47 * width))
+    masses = sorted(datasets)
+    palette = [COLORS["blue"], COLORS["teal"], COLORS["red"]]
+    colors = {
+        mass: palette[index % len(palette)] for index, mass in enumerate(masses)
+    }
+    bin_count = int(figure_config.get("sbi_input_histogram_bins", 60))
+    quantiles = figure_config.get("sbi_input_quantile_range", [0.005, 0.995])
+    quantile_low, quantile_high = (float(value) for value in quantiles)
+    if not (0.0 <= quantile_low < quantile_high <= 1.0):
+        raise ValueError("figures.sbi_input_quantile_range must lie within [0, 1]")
+
+    observable_sizes = {
+        int(dataset["observables"].shape[1]) for dataset in datasets.values()
+    }
+    if observable_sizes != {len(OBSERVABLE_FEATURES)}:
+        raise ValueError(
+            "Observable schema does not match the documented SBI input features: "
+            f"found dimensions {sorted(observable_sizes)}"
+        )
+
+    rows: list[dict[str, Any]] = []
+    pooled = np.concatenate(
+        [dataset["observables"] for dataset in datasets.values()], axis=0
+    )
+    for feature_index, ((feature_name, label), axis) in enumerate(
+        zip(OBSERVABLE_FEATURES, axes.ravel())
+    ):
+        values = pooled[:, feature_index]
+        low, high = np.quantile(
+            values[np.isfinite(values)], [quantile_low, quantile_high]
+        )
+        if np.isclose(low, high):
+            low, high = float(low) - 0.5, float(high) + 0.5
+        edges = np.linspace(float(low), float(high), bin_count + 1)
+        centres = 0.5 * (edges[:-1] + edges[1:])
+        for mass in masses:
+            feature_values = datasets[mass]["observables"][:, feature_index]
+            counts, _ = np.histogram(feature_values, bins=edges)
+            density, _ = np.histogram(feature_values, bins=edges, density=True)
+            axis.stairs(
+                density,
+                edges,
+                color=colors[mass],
+                linewidth=1.1,
+                label=f"{mass:g} GeV",
+            )
+            rows.extend(
+                {
+                    "feature_index": feature_index,
+                    "feature": feature_name,
+                    "truth_mass_gev": mass,
+                    "bin_low_gev": edge_low,
+                    "bin_high_gev": edge_high,
+                    "bin_center_gev": centre,
+                    "count": int(count),
+                    "probability_density_per_gev": value,
+                }
+                for edge_low, edge_high, centre, count, value in zip(
+                    edges[:-1], edges[1:], centres, counts, density
+                )
+            )
+        axis.set_xlabel(label)
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    figure.legend(
+        handles,
+        labels,
+        title="Parent-mass template",
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=len(masses),
+    )
+    figure.text(
+        0.01,
+        0.015,
+        f"$n={len(next(iter(datasets.values()))['observables']):,}$ events per template",
+        ha="left",
+        fontsize=6.2,
+        color=COLORS["neutral"],
+    )
+    figure.text(
+        0.99,
+        0.015,
+        "Raw SBI inputs; a fitted affine standardization is applied before training",
+        ha="right",
+        fontsize=6.2,
+        color=COLORS["neutral"],
+    )
+    for axis in axes[:, 0]:
+        axis.set_ylabel("Probability density")
+    _clean_axes(axes)
+    _panel_labels(axes)
+    figure.subplots_adjust(
+        left=0.07, right=0.99, bottom=0.16, top=0.84, wspace=0.48, hspace=0.62
+    )
+    paths = save_publication_figure(
+        figure, output_dir / "sbi_input_distributions", figure_config
+    )
+    _write_rows(output_dir / "sbi_input_distributions.csv", rows)
     return rows, paths
 
 

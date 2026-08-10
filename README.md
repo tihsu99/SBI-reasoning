@@ -42,6 +42,8 @@ Outputs are written under the configured `output_dir`:
 
 - `data/`: generated template and pseudo-data samples;
 - `dataset_truth_mass_sanity.*`: energy sampling, truth mass closure, oracle spectra, and peak closure;
+- `sbi_input_distributions.*`: the ten raw low-level inputs used by both SBI models, overlaid for every parent-mass template with common bins and per-hypothesis density normalization;
+- `sbi_input_distributions.csv`: bin counts and densities underlying every low-level input panel;
 - `models.pt`: both discriminators, the pretrained flow, one independent DGPO flow per pseudo-data mass, profile-calibration anchors, and scalers;
 - `training_history.*`: discriminator, flow, and DGPO monitoring;
 - `momentum_reconstruction_diagnostics.*`: truth-versus-reconstructed neutrino momentum and component-wise residual bias and resolution at the configured diagnostic mass;
