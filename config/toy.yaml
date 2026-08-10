@@ -2,11 +2,11 @@ seed: 240513
 output_dir: /pscratch/sd/t/tihsu/database/SBI-reasoning/toy-model
 
 data:
-  template_masses_gev: [400.0, 500.0, 600.0]
+  template_masses_gev: [480.0, 500.0, 520.0]
   real_masses_gev:
-    start: 400.0
-    stop: 600.0
-    step: 25.0
+    start: 480.0
+    stop: 520.0
+    step: 5.0
   template_events_per_mass: 100000
   real_events_per_mass: 100000
   validation_fraction: 0.2
@@ -44,7 +44,7 @@ sampling:
 
 dgpo:
   scope: independent_per_pseudo_data
-  iterations_per_pseudo_data: 100
+  iterations_per_pseudo_data: 1000
   batch_size: 1024
   group_size: 4
   condition_sampling: balanced
@@ -69,7 +69,7 @@ figures:
   raster_dpi: 600
   preview_dpi: 300
   formats: [svg, pdf, tiff, png]
-  likelihood_masses_gev: [400.0, 450.0, 500.0, 550.0, 600.0]
+  likelihood_masses_gev: [480.0, 500.0, 520.0]
   momentum_diagnostic_mass_gev: 500.0
   momentum_scatter_points: 2000
   sbi_input_histogram_bins: 60

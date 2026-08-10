@@ -132,6 +132,12 @@ def signed_tag(value: float) -> str:
     return f"{sign}{mass_tag(abs(100.0 * value))}pct"
 
 
+def independent_dgpo_seed(base_seed: int, mass_gev: float) -> int:
+    """Derive an order-independent random seed for one pseudo-data mass."""
+    mass_key = int(round(1000.0 * mass_gev))
+    return int(np.random.SeedSequence([base_seed, mass_key]).generate_state(1)[0])
+
+
 def hypothesis_dataset_path(
     output_dir: Path,
     sample_type: str,
@@ -640,6 +646,7 @@ def run_training(
     )
     dgpo_config = {**config["dgpo"], "iterations": iterations_per_pseudo_data}
     dgpo_states: dict[float, dict[str, torch.Tensor]] = {}
+    dgpo_scenario_seeds: dict[float, int] = {}
     dgpo_history: dict[str, list[float]] = {
         "loss": [],
         "reward_mean": [],
@@ -651,7 +658,15 @@ def run_training(
         flush=True,
     )
     for mass, dataset in sorted(real_datasets.items()):
-        print(f"[train] DGPO pseudo-data mass={mass:g} GeV", flush=True)
+        scenario_seed = independent_dgpo_seed(int(config["seed"]), mass)
+        scenario_rng = np.random.default_rng(scenario_seed)
+        torch.manual_seed(scenario_seed)
+        if device.type == "cuda":
+            torch.cuda.manual_seed_all(scenario_seed)
+        print(
+            f"[train] DGPO pseudo-data mass={mass:g} GeV seed={scenario_seed}",
+            flush=True,
+        )
         policy = copy.deepcopy(reference)
         scenario_history = train_dgpo(
             policy,
@@ -666,13 +681,14 @@ def run_training(
             config["sampling"],
             int(config["evaluation"]["batch_size"]),
             device,
-            np_rng,
+            scenario_rng,
             str(config["training"].get("mixed_precision", "none")),
             metric_logger,
         )
         dgpo_states[float(mass)] = {
             key: value.cpu() for key, value in policy.state_dict().items()
         }
+        dgpo_scenario_seeds[float(mass)] = scenario_seed
         for metric in ["loss", "reward_mean", "reward_spread"]:
             dgpo_history[metric].extend(scenario_history[metric])
         dgpo_history["mass_gev"].extend(
@@ -690,6 +706,7 @@ def run_training(
         "full_profiler_state": full_profiler.cpu().state_dict(),
         "flow_sft_state": {key: value.cpu() for key, value in sft_state.items()},
         "flow_dgpo_states": dgpo_states,
+        "dgpo_scenario_seeds": dgpo_scenario_seeds,
         "dgpo_scope": "independent_per_pseudo_data",
         "profile_calibration": profile_calibration,
         "history": {
