@@ -515,7 +515,8 @@ def plot_sbi_likelihood_diagnostics(
     profiles: dict[float, dict[str, np.ndarray]],
     profile_rows: list[dict[str, float]],
     histories: dict[str, Any],
-    template_masses: list[float],
+    profile_masses: list[float],
+    profiler_type: str,
     config: dict[str, Any],
     output_dir: Path,
 ) -> tuple[list[dict[str, float | str]], list[Path]]:
@@ -548,11 +549,15 @@ def plot_sbi_likelihood_diagnostics(
         label="Visible + truth invisible",
     )
     accuracy_axis.axhline(
-        1.0 / len(template_masses),
+        0.5 if profiler_type == "mass_parameterized_ratio" else 1.0 / len(profile_masses),
         color=COLORS["dark"],
         linestyle="--",
         linewidth=0.8,
-        label="Random classifier",
+        label=(
+            "Joint/product chance"
+            if profiler_type == "mass_parameterized_ratio"
+            else "Random classifier"
+        ),
     )
     accuracy_axis.set(xlabel="Epoch", ylabel="Validation accuracy", ylim=(0.0, 1.02))
 
@@ -561,8 +566,8 @@ def plot_sbi_likelihood_diagnostics(
     full_truth = np.asarray([row["truth_full_profile_mass_gev"] for row in profile_rows])
     estimate_axis.plot(truth, visible, marker="o", markersize=2.5, color=COLORS["blue"], label="Visible")
     estimate_axis.plot(truth, full_truth, marker="o", markersize=2.5, color=COLORS["red"], label="Visible + truth invisible")
-    padding = 0.05 * (max(template_masses) - min(template_masses))
-    limits = (min(template_masses) - padding, max(template_masses) + padding)
+    padding = 0.05 * (max(profile_masses) - min(profile_masses))
+    limits = (min(profile_masses) - padding, max(profile_masses) + padding)
     estimate_axis.plot(limits, limits, color=COLORS["dark"], linestyle="--", linewidth=1.0)
     estimate_axis.set(
         xlim=limits,
@@ -571,7 +576,10 @@ def plot_sbi_likelihood_diagnostics(
         ylabel="Calibrated profile estimate (GeV)",
     )
 
-    template_array = np.asarray(template_masses, dtype=np.float64)
+    profile_array = np.asarray(profile_masses, dtype=np.float64)
+    simulated_templates = np.asarray(
+        config["data"]["template_masses_gev"], dtype=np.float64
+    )
     csv_rows: list[dict[str, float | str]] = []
     for index, (mass, axis) in enumerate(zip(selected, likelihood_axes)):
         for method, color, label in [
@@ -579,22 +587,39 @@ def plot_sbi_likelihood_diagnostics(
             ("visible_truth", COLORS["red"], "Visible + truth invisible"),
         ]:
             values = profiles[mass][method]
-            dense_mass, dense_values = _quadratic_curve(template_array, values)
-            curvature = float(np.polyfit(template_array, values, 2)[0])
+            if profiler_type == "mass_parameterized_ratio":
+                dense_mass = profile_array
+                dense_values = values
+                line_style = "-"
+            else:
+                dense_mass, dense_values = _quadratic_curve(profile_array, values)
+                curvature = float(np.polyfit(profile_array, values, 2)[0])
+                line_style = "-" if curvature > 0.0 else ":"
             axis.plot(
                 dense_mass,
                 dense_values,
                 color=color,
-                linestyle="-" if curvature > 0.0 else ":",
+                linestyle=line_style,
                 label=label if index == 0 else None,
             )
-            axis.plot(template_array, values, linestyle="none", marker="o", markersize=2.5, color=color)
-            for template_mass, value in zip(template_array, values):
+            marker_indices = [
+                int(np.argmin(np.abs(profile_array - template_mass)))
+                for template_mass in simulated_templates
+            ]
+            axis.plot(
+                profile_array[marker_indices],
+                values[marker_indices],
+                linestyle="none",
+                marker="o",
+                markersize=3.0,
+                color=color,
+            )
+            for hypothesis_mass, value in zip(profile_array, values):
                 csv_rows.append(
                     {
                         "truth_mass_gev": mass,
                         "profile": method,
-                        "template_mass_gev": float(template_mass),
+                        "profile_mass_gev": float(hypothesis_mass),
                         "negative_two_delta_mean_log_score": float(value),
                     }
                 )
@@ -616,7 +641,11 @@ def plot_sbi_likelihood_diagnostics(
     figure.text(
         0.99,
         0.02,
-        "Markers: templates; solid/dotted curves: convex/non-convex quadratic interpolation",
+        (
+            "Markers: three simulated templates; curves: parameterized inference scan"
+            if profiler_type == "mass_parameterized_ratio"
+            else "Markers: three simulated templates; solid/dotted: convex/non-convex interpolation"
+        ),
         ha="right",
         fontsize=6.5,
     )
