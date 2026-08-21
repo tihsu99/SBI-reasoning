@@ -17,14 +17,15 @@ experiments:
 physics:
   parent_momentum:
     distribution: double_exponential
-    center_gev: 1000.0
-    scale_gev: 150.0
+    center_gev: 300.0
+    scale_gev: 45.0
   lepton_mass_gev: 0.0
   neutrino_mass_gev: 0.0
   lepton_relative_resolution: 0.02
   met_resolution_gev: 5.0
 
 model:
+  profiler_type: mass_parameterized_ratio  # Set to template_classifier for the legacy mode.
   hidden_dims: [128, 256, 128]
   time_embedding_dim: 16
 
@@ -54,9 +55,18 @@ dgpo:
   minimum_timestep: 0.3
   gradient_clip: 1.0
   profile_estimator_scale_gev: 100.0
+  estimator_gap_tolerance_gev: 5.0
+  estimator_gap_patience: 10
+  reward_spread_threshold: 0.00001
+  reward_spread_patience: 25
+  minimum_iterations: 25
   log_every: 25
 
 evaluation:
+  profile_scan_masses_gev:
+    start: 400.0
+    stop: 600.0
+    step: 5.0
   batch_size: 1024
   histogram_bins: 80
   mass_range_gev: [0.0, 1200.0]

@@ -71,6 +71,11 @@ class TemplateDiscriminator(DenseNetwork):
     pass
 
 
+class MassRatioEstimator(DenseNetwork):
+    def __init__(self, feature_dim: int, hidden_dims: list[int]):
+        super().__init__(feature_dim + 1, 1, hidden_dims)
+
+
 class ConditionalFlow(nn.Module):
     def __init__(
         self,
@@ -157,6 +162,8 @@ def train_discriminator(
     scaler = torch.amp.GradScaler(
         "cuda", enabled=device.type == "cuda" and mixed_precision == "fp16"
     )
+    best_accuracy = -np.inf
+    best_state: dict[str, torch.Tensor] | None = None
     for epoch in range(epochs):
         model.train()
         losses = []
@@ -178,6 +185,9 @@ def train_discriminator(
         accuracy = float(np.mean(predictions == validation_labels))
         history["loss"].append(float(np.mean(losses)))
         history["validation_accuracy"].append(accuracy)
+        if accuracy > best_accuracy:
+            best_accuracy = accuracy
+            best_state = copy.deepcopy(model.state_dict())
         if metric_logger is not None:
             metric_logger(
                 {
@@ -191,6 +201,116 @@ def train_discriminator(
             f"loss={history['loss'][-1]:.4f} validation_accuracy={accuracy:.4f}",
             flush=True,
         )
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return history
+
+
+def train_ratio_estimator(
+    model: MassRatioEstimator,
+    train_features: np.ndarray,
+    train_masses: np.ndarray,
+    validation_features: np.ndarray,
+    validation_masses: np.ndarray,
+    mass_scaler: Standardizer,
+    config: dict[str, Any],
+    device: torch.device,
+    rng: np.random.Generator,
+    name: str,
+    metric_logger: MetricLogger | None = None,
+) -> dict[str, list[float]]:
+    """Train a likelihood-to-evidence ratio estimator with joint/product pairs."""
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(config["profiler_learning_rate"]),
+        weight_decay=float(config["weight_decay"]),
+    )
+    model.to(device)
+    history = {"loss": [], "validation_accuracy": []}
+    epochs = int(config["profiler_epochs"])
+    batch_size = int(config["batch_size"])
+    mixed_precision = str(config.get("mixed_precision", "none"))
+    scaler = torch.amp.GradScaler(
+        "cuda", enabled=device.type == "cuda" and mixed_precision == "fp16"
+    )
+    all_train_masses = np.asarray(train_masses, dtype=np.float32).reshape(-1, 1)
+    all_validation_masses = np.asarray(validation_masses, dtype=np.float32).reshape(
+        -1, 1
+    )
+    best_accuracy = -np.inf
+    best_state: dict[str, torch.Tensor] | None = None
+    for epoch in range(epochs):
+        model.train()
+        losses = []
+        for indices in iter_batches(len(train_features), batch_size, rng):
+            features = train_features[indices]
+            matched_mass = all_train_masses[indices]
+            marginal_mass = all_train_masses[
+                rng.integers(0, len(all_train_masses), size=len(indices))
+            ]
+            positive = np.concatenate(
+                [features, mass_scaler.transform(matched_mass)], axis=1
+            )
+            negative = np.concatenate(
+                [features, mass_scaler.transform(marginal_mass)], axis=1
+            )
+            inputs = torch.from_numpy(np.concatenate([positive, negative])).to(device)
+            labels = torch.cat(
+                [
+                    torch.ones(len(indices), device=device),
+                    torch.zeros(len(indices), device=device),
+                ]
+            )
+            optimizer.zero_grad(set_to_none=True)
+            with autocast_context(device, mixed_precision):
+                logits = model(inputs).squeeze(1)
+                loss = F.binary_cross_entropy_with_logits(logits, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            losses.append(float(loss.detach().cpu()))
+
+        model.eval()
+        validation_marginal = all_validation_masses[
+            rng.integers(0, len(all_validation_masses), size=len(all_validation_masses))
+        ]
+        positive = np.concatenate(
+            [
+                validation_features,
+                mass_scaler.transform(all_validation_masses),
+            ],
+            axis=1,
+        )
+        negative = np.concatenate(
+            [validation_features, mass_scaler.transform(validation_marginal)], axis=1
+        )
+        with torch.no_grad():
+            positive_logits = model(torch.from_numpy(positive).to(device)).squeeze(1)
+            negative_logits = model(torch.from_numpy(negative).to(device)).squeeze(1)
+            accuracy = 0.5 * (
+                float((positive_logits > 0.0).float().mean().cpu())
+                + float((negative_logits < 0.0).float().mean().cpu())
+            )
+        history["loss"].append(float(np.mean(losses)))
+        history["validation_accuracy"].append(accuracy)
+        if accuracy > best_accuracy:
+            best_accuracy = accuracy
+            best_state = copy.deepcopy(model.state_dict())
+        if metric_logger is not None:
+            metric_logger(
+                {
+                    f"train/{name}/loss": history["loss"][-1],
+                    f"train/{name}/validation_accuracy": accuracy,
+                    f"train/{name}/epoch": float(epoch + 1),
+                }
+            )
+        print(
+            f"[{name}] epoch {epoch + 1:03d}/{epochs:03d} "
+            f"loss={history['loss'][-1]:.4f} validation_accuracy={accuracy:.4f}",
+            flush=True,
+        )
+    if best_state is not None:
+        model.load_state_dict(best_state)
     return history
 
 
@@ -294,11 +414,78 @@ def predict_log_probabilities(
     return np.concatenate(chunks, axis=0)
 
 
+@torch.no_grad()
+def predict_log_ratios(
+    model: MassRatioEstimator,
+    features: np.ndarray,
+    hypothesis_masses: list[float],
+    mass_scaler: Standardizer,
+    device: torch.device,
+    batch_size: int,
+) -> np.ndarray:
+    """Evaluate log likelihood-to-evidence ratios on a mass scan."""
+    model.eval()
+    masses = mass_scaler.transform(
+        np.asarray(hypothesis_masses, dtype=np.float32).reshape(-1, 1)
+    )
+    chunks = []
+    for start in range(0, len(features), batch_size):
+        batch = torch.from_numpy(features[start : start + batch_size]).to(device)
+        mass = torch.from_numpy(masses).to(device)
+        event_count = len(batch)
+        hypothesis_count = len(mass)
+        repeated_features = batch[:, None, :].expand(
+            event_count, hypothesis_count, batch.shape[1]
+        )
+        repeated_masses = mass[None, :, :].expand(event_count, hypothesis_count, 1)
+        inputs = torch.cat([repeated_features, repeated_masses], dim=2).reshape(
+            event_count * hypothesis_count, -1
+        )
+        chunks.append(model(inputs).reshape(event_count, hypothesis_count).cpu().numpy())
+    return np.concatenate(chunks, axis=0)
+
+
+def predict_profile_scores(
+    model: nn.Module,
+    features: np.ndarray,
+    profiler_type: str,
+    hypothesis_masses: list[float],
+    mass_scaler: Standardizer | None,
+    device: torch.device,
+    batch_size: int,
+) -> np.ndarray:
+    """Evaluate either supported mass-profiler representation."""
+    if profiler_type == "template_classifier":
+        if not isinstance(model, TemplateDiscriminator):
+            raise TypeError("template_classifier requires TemplateDiscriminator")
+        return predict_log_probabilities(model, features, device, batch_size)
+    if profiler_type == "mass_parameterized_ratio":
+        if not isinstance(model, MassRatioEstimator):
+            raise TypeError("mass_parameterized_ratio requires MassRatioEstimator")
+        if mass_scaler is None:
+            raise ValueError("mass_parameterized_ratio requires a mass scaler")
+        return predict_log_ratios(
+            model,
+            features,
+            hypothesis_masses,
+            mass_scaler,
+            device,
+            batch_size,
+        )
+    raise ValueError(f"Unknown profiler_type: {profiler_type}")
+
+
 def profile_mass_vertex(profile: torch.Tensor, template_masses: list[float]) -> float:
     masses = np.asarray(template_masses, dtype=np.float64)
     values = profile.detach().cpu().numpy().astype(np.float64)
     negative_two_delta_log_likelihood = -2.0 * (values - values.max())
-    quadratic, linear, _ = np.polyfit(masses, negative_two_delta_log_likelihood, 2)
+    minimum = int(np.argmin(negative_two_delta_log_likelihood))
+    if minimum == 0 or minimum == len(masses) - 1:
+        return float(masses[minimum])
+    local = slice(minimum - 1, minimum + 2)
+    quadratic, linear, _ = np.polyfit(
+        masses[local], negative_two_delta_log_likelihood[local], 2
+    )
     if quadratic <= 0.0:
         return float(masses[np.argmin(negative_two_delta_log_likelihood)])
     return float(np.clip(-linear / (2.0 * quadratic), masses.min(), masses.max()))
@@ -344,13 +531,15 @@ def profile_estimator_reward(
 def train_dgpo(
     policy: ConditionalFlow,
     reference: ConditionalFlow,
-    observed_profiler: TemplateDiscriminator,
-    full_profiler: TemplateDiscriminator,
+    observed_profiler: nn.Module,
+    full_profiler: nn.Module,
     real_datasets: dict[float, dict[str, np.ndarray]],
     condition_scaler: Standardizer,
     target_scaler: Standardizer,
     full_scaler: Standardizer,
-    template_masses: list[float],
+    mass_scaler: Standardizer | None,
+    profile_masses: list[float],
+    profiler_type: str,
     profile_calibration: dict[str, dict[str, list[float]]],
     dgpo_config: dict[str, Any],
     sampling_config: dict[str, Any],
@@ -359,7 +548,7 @@ def train_dgpo(
     rng: np.random.Generator,
     mixed_precision: str = "none",
     metric_logger: MetricLogger | None = None,
-) -> dict[str, list[float]]:
+) -> tuple[dict[str, list[float]], str]:
     reference = copy.deepcopy(reference).to(device).eval()
     reference.requires_grad_(False)
     observed_profiler.eval().requires_grad_(False)
@@ -377,12 +566,18 @@ def train_dgpo(
     target_estimates: dict[float, float] = {}
     for mass, dataset in real_datasets.items():
         standardized = condition_scaler.transform(dataset["observables"])
-        log_probabilities = predict_log_probabilities(
-            observed_profiler, standardized, device, evaluation_batch_size
+        log_probabilities = predict_profile_scores(
+            observed_profiler,
+            standardized,
+            profiler_type,
+            profile_masses,
+            mass_scaler,
+            device,
+            evaluation_batch_size,
         )
         raw_estimate = profile_mass_vertex(
             torch.from_numpy(log_probabilities).to(device).mean(dim=0),
-            template_masses,
+            profile_masses,
         )
         target_estimates[mass] = calibrate_profile_estimate(
             raw_estimate,
@@ -402,7 +597,16 @@ def train_dgpo(
         "reward_spread": [],
         "target_estimate_gev": [],
         "candidate_estimate_mean_gev": [],
+        "estimator_gap_gev": [],
     }
+    gap_tolerance = float(dgpo_config["estimator_gap_tolerance_gev"])
+    gap_patience = int(dgpo_config["estimator_gap_patience"])
+    spread_threshold = float(dgpo_config["reward_spread_threshold"])
+    spread_patience = int(dgpo_config["reward_spread_patience"])
+    minimum_iterations = int(dgpo_config["minimum_iterations"])
+    gap_streak = 0
+    low_spread_streak = 0
+    stop_reason = "maximum_iterations"
 
     for iteration in range(iterations):
         if str(dgpo_config["condition_sampling"]) == "balanced":
@@ -432,13 +636,21 @@ def train_dgpo(
                 full_raw = np.concatenate(
                     [observations_raw, candidate_raw[group_index]], axis=1
                 )
-                full_features = torch.from_numpy(full_scaler.transform(full_raw)).to(device)
-                candidate_profile = F.log_softmax(
-                    full_profiler(full_features), dim=1
-                ).mean(dim=0)
+                full_features = full_scaler.transform(full_raw)
+                candidate_profile = torch.from_numpy(
+                    predict_profile_scores(
+                        full_profiler,
+                        full_features,
+                        profiler_type,
+                        profile_masses,
+                        mass_scaler,
+                        device,
+                        evaluation_batch_size,
+                    )
+                ).to(device).mean(dim=0)
                 raw_candidate_estimate = profile_mass_vertex(
                     candidate_profile,
-                    template_masses,
+                    profile_masses,
                 )
                 candidate_estimate = calibrate_profile_estimate(
                     raw_candidate_estimate,
@@ -455,6 +667,7 @@ def train_dgpo(
             rewards_tensor = torch.tensor(rewards, device=device, dtype=conditions.dtype)
             reward_std = rewards_tensor.std(unbiased=False)
             advantages = (rewards_tensor - rewards_tensor.mean()) / (reward_std + 1e-6)
+            estimator_gap = abs(float(np.mean(candidate_estimates)) - target_estimates[mass])
 
         candidate_flat = candidate_standardized.detach().reshape(
             group_size * batch_size, -1
@@ -502,6 +715,13 @@ def train_dgpo(
         history["candidate_estimate_mean_gev"].append(
             float(np.mean(candidate_estimates))
         )
+        history["estimator_gap_gev"].append(estimator_gap)
+        gap_streak = gap_streak + 1 if estimator_gap <= gap_tolerance else 0
+        low_spread_streak = (
+            low_spread_streak + 1
+            if float(reward_std.cpu()) <= spread_threshold
+            else 0
+        )
         if metric_logger is not None:
             metric_logger(
                 {
@@ -514,6 +734,7 @@ def train_dgpo(
                     "train/dgpo/candidate_estimate_mean_gev": history[
                         "candidate_estimate_mean_gev"
                     ][-1],
+                    "train/dgpo/estimator_gap_gev": estimator_gap,
                     "train/dgpo/iteration": float(iteration + 1),
                     "train/dgpo/mass_gev": mass,
                 }
@@ -525,7 +746,20 @@ def train_dgpo(
                 f"reward={history['reward_mean'][-1]:.4f} "
                 f"spread={history['reward_spread'][-1]:.4f} "
                 f"target={history['target_estimate_gev'][-1]:.1f} GeV "
-                f"candidate={history['candidate_estimate_mean_gev'][-1]:.1f} GeV",
+                f"candidate={history['candidate_estimate_mean_gev'][-1]:.1f} GeV "
+                f"gap={estimator_gap:.1f} GeV",
                 flush=True,
             )
-    return history
+        if iteration + 1 >= minimum_iterations:
+            if gap_streak >= gap_patience:
+                stop_reason = "estimator_gap"
+            elif low_spread_streak >= spread_patience:
+                stop_reason = "low_reward_spread"
+            if stop_reason != "maximum_iterations":
+                print(
+                    f"[dgpo] early stop mass={mass:.1f} reason={stop_reason} "
+                    f"iterations={iteration + 1}",
+                    flush=True,
+                )
+                break
+    return history, stop_reason
