@@ -1,0 +1,8 @@
+outputs/
+sbi_reduced.csv
+obs_mu0p4/
+obs_mu2p5/
+__pycache__/
+.venv/
+.claude/
+*.npy
