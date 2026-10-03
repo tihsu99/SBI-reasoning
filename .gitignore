@@ -1,0 +1,9 @@
+outputs/
+sbi_reduced.csv
+obs_mu*/
+__pycache__/
+.venv/
+.claude/
+*.npy
+*.pt
+SBI_reasoning.pdf
