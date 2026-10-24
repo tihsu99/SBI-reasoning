@@ -359,7 +359,11 @@ def train_dgpo(
     rng: np.random.Generator,
     mixed_precision: str = "none",
     metric_logger: MetricLogger | None = None,
+    estimator: Any = None,
 ) -> dict[str, list[float]]:
+    """`estimator`, if given, replaces the profiler-vertex estimates in the reward. It must
+    provide target(observables_raw) -> GeV for the visible-only dataset estimate and
+    candidate(observables_raw, neutrino_raw) -> GeV for a reconstructed batch."""
     reference = copy.deepcopy(reference).to(device).eval()
     reference.requires_grad_(False)
     observed_profiler.eval().requires_grad_(False)
@@ -376,6 +380,9 @@ def train_dgpo(
     full_calibration = profile_calibration.get("visible_plus_truth_invisible")
     target_estimates: dict[float, float] = {}
     for mass, dataset in real_datasets.items():
+        if estimator is not None:
+            target_estimates[mass] = float(estimator.target(dataset["observables"]))
+            continue
         standardized = condition_scaler.transform(dataset["observables"])
         log_probabilities = predict_log_probabilities(
             observed_profiler, standardized, device, evaluation_batch_size
@@ -429,6 +436,17 @@ def train_dgpo(
             rewards = []
             candidate_estimates = []
             for group_index in range(group_size):
+                if estimator is not None:
+                    candidate_estimate = float(
+                        estimator.candidate(observations_raw, candidate_raw[group_index])
+                    )
+                    candidate_estimates.append(candidate_estimate)
+                    rewards.append(
+                        profile_estimator_reward(
+                            candidate_estimate, target_estimates[mass], estimator_scale_gev
+                        )
+                    )
+                    continue
                 full_raw = np.concatenate(
                     [observations_raw, candidate_raw[group_index]], axis=1
                 )
