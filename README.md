@@ -82,6 +82,30 @@ sbatch --account=<NERSC_ACCOUNT> scripts/train_nersc.slurm
 
 The reported peak and resolution come from a Gaussian-plus-offset fit to the reconstructed mass histogram. If a fit is ill-conditioned, evaluation falls back to the median and central 68% half-width.
 
+## SBI-guided DGPO with the moment-curve estimator
+
+`sbi_reasoning/moment_curve.py` provides a three-template mass estimator. A linear classifier on
+rotation-invariant features is trained on the templates, its mean log-probability differences are
+anchored at the templates by cross-fitting, and a dataset's statistic is projected onto the
+quadratic-in-mass curve through those anchors. `train_dgpo` accepts it through an optional
+`estimator` argument. Without that argument, DGPO behaves exactly as before.
+
+`scripts/sbi_dgpo.py` runs one full comparison per seed. It uses the toy.yaml physics and the
+pipeline's own profilers, flow and DGPO settings, and compares, on held-out pseudo-data at every
+truth mass:
+- supervised reconstruction;
+- truth-reward DGPO on simulation;
+- SBI-guided DGPO with the toy estimators;
+- SBI-guided DGPO with the moment-curve estimators, with and without a target shifted by the
+  reconstructed-peak offset measured on template simulation.
+
+```bash
+uv run python scripts/sbi_dgpo.py --seed 0             # ~10 min on one T4; repeat for seeds 1-3
+uv run python scripts/sbi_dgpo_figures.py outputs/sbi_dgpo results/sbi_dgpo
+```
+
+Results and their interpretation are in `results/sbi_dgpo/RESULTS.md`.
+
 ## Scope
 
 This is a method-validation toy, not an identifiable measurement of an unknown invisible-particle rest mass. The default invisible mass is zero and the model reconstructs invisible momentum. A nonzero mass shell can be configured in YAML, but learning that common rest mass from unlabeled dilepton-plus-MET events would require adding it as a global parameter of interest and validating identifiability and coverage.
